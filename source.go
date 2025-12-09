@@ -66,6 +66,7 @@ func (s *source) skipTags() error {
 		if n != 4 {
 			return nil
 		}
+		//nolint:gosec // buf is guaranteed to have 4 elements after ReadFull check above
 		size := (uint32(buf[0]) << 21) | (uint32(buf[1]) << 14) |
 			(uint32(buf[2]) << 7) | uint32(buf[3])
 		buf = make([]byte, size)

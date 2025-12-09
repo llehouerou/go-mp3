@@ -17,7 +17,7 @@ package bits_test
 import (
 	"testing"
 
-	. "github.com/hajimehoshi/go-mp3/internal/bits"
+	"github.com/llehouerou/go-mp3/internal/bits"
 )
 
 func TestBits(t *testing.T) {
@@ -25,7 +25,7 @@ func TestBits(t *testing.T) {
 	b2 := byte(170) // 10101010
 	b3 := byte(204) // 11001100
 	b4 := byte(51)  // 00110011
-	b := New([]byte{b1, b2, b3, b4})
+	b := bits.New([]byte{b1, b2, b3, b4})
 	if b.Bits(1) != 0 {
 		t.Fail()
 	}

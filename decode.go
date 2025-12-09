@@ -18,9 +18,9 @@ import (
 	"errors"
 	"io"
 
-	"github.com/hajimehoshi/go-mp3/internal/consts"
-	"github.com/hajimehoshi/go-mp3/internal/frame"
-	"github.com/hajimehoshi/go-mp3/internal/frameheader"
+	"github.com/llehouerou/go-mp3/internal/consts"
+	"github.com/llehouerou/go-mp3/internal/frame"
+	"github.com/llehouerou/go-mp3/internal/frameheader"
 )
 
 // A Decoder is a MP3-decoded stream.
@@ -41,10 +41,11 @@ func (d *Decoder) readFrame() error {
 	var err error
 	d.frame, _, err = frame.Read(d.source, d.source.pos, d.frame)
 	if err != nil {
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return io.EOF
 		}
-		if _, ok := err.(*consts.UnexpectedEOF); ok {
+		var unexpectedEOF *consts.UnexpectedEOFError
+		if errors.As(err, &unexpectedEOF) {
 			// TODO: Log here?
 			return io.EOF
 		}
@@ -153,10 +154,11 @@ func (d *Decoder) ensureFrameStartsAndLength() error {
 	for {
 		h, pos, err := frameheader.Read(d.source, d.source.pos)
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
-			if _, ok := err.(*consts.UnexpectedEOF); ok {
+			var unexpectedEOF *consts.UnexpectedEOFError
+			if errors.As(err, &unexpectedEOF) {
 				// TODO: Log here?
 				break
 			}
@@ -172,7 +174,7 @@ func (d *Decoder) ensureFrameStartsAndLength() error {
 		}
 		buf := make([]byte, framesize-4)
 		if _, err := d.source.ReadFull(buf); err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			return err

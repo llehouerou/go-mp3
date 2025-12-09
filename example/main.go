@@ -20,9 +20,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/hajimehoshi/oto/v2"
+	"github.com/ebitengine/oto/v3"
 
-	"github.com/hajimehoshi/go-mp3"
+	"github.com/llehouerou/go-mp3"
 )
 
 func run() error {
@@ -37,14 +37,18 @@ func run() error {
 		return err
 	}
 
-	c, ready, err := oto.NewContext(d.SampleRate(), 2, 2)
+	op := &oto.NewContextOptions{
+		SampleRate:   d.SampleRate(),
+		ChannelCount: 2,
+		Format:       oto.FormatSignedInt16LE,
+	}
+	c, ready, err := oto.NewContext(op)
 	if err != nil {
 		return err
 	}
 	<-ready
 
 	p := c.NewPlayer(d)
-	defer p.Close()
 	p.Play()
 
 	fmt.Printf("Length: %d[bytes]\n", d.Length())

@@ -17,30 +17,30 @@ package maindata
 import (
 	"fmt"
 
-	"github.com/hajimehoshi/go-mp3/internal/bits"
-	"github.com/hajimehoshi/go-mp3/internal/consts"
-	"github.com/hajimehoshi/go-mp3/internal/frameheader"
-	"github.com/hajimehoshi/go-mp3/internal/huffman"
-	"github.com/hajimehoshi/go-mp3/internal/sideinfo"
+	"github.com/llehouerou/go-mp3/internal/bits"
+	"github.com/llehouerou/go-mp3/internal/consts"
+	"github.com/llehouerou/go-mp3/internal/frameheader"
+	"github.com/llehouerou/go-mp3/internal/huffman"
+	"github.com/llehouerou/go-mp3/internal/sideinfo"
 )
 
-func readHuffman(m *bits.Bits, header frameheader.FrameHeader, sideInfo *sideinfo.SideInfo, mainData *MainData, part_2_start, gr, ch int) error {
+func readHuffman(m *bits.Bits, header frameheader.FrameHeader, sideInfo *sideinfo.SideInfo, mainData *MainData, part2Start, gr, ch int) error {
 	// Check that there is any data to decode. If not, zero the array.
 	if sideInfo.Part2_3Length[gr][ch] == 0 {
-		for i := 0; i < consts.SamplesPerGr; i++ {
+		for i := range consts.SamplesPerGr {
 			mainData.Is[gr][ch][i] = 0.0
 		}
 		return nil
 	}
 
-	// Calculate bit_pos_end which is the index of the last bit for this part.
-	bit_pos_end := part_2_start + sideInfo.Part2_3Length[gr][ch] - 1
+	// Calculate bitPosEnd which is the index of the last bit for this part.
+	bitPosEnd := part2Start + sideInfo.Part2_3Length[gr][ch] - 1
 	// Determine region boundaries
-	region_1_start := 0
-	region_2_start := 0
+	region1Start := 0
+	region2Start := 0
 	if (sideInfo.WinSwitchFlag[gr][ch] == 1) && (sideInfo.BlockType[gr][ch] == 2) {
-		region_1_start = 36                  // sfb[9/3]*3=36
-		region_2_start = consts.SamplesPerGr // No Region2 for short block case.
+		region1Start = 36                  // sfb[9/3]*3=36
+		region2Start = consts.SamplesPerGr // No Region2 for short block case.
 	} else {
 		sfreq := header.SamplingFrequency()
 		lsf := header.LowSamplingFrequency()
@@ -50,84 +50,85 @@ func readHuffman(m *bits.Bits, header frameheader.FrameHeader, sideInfo *sideinf
 			// TODO: Better error messages (#3)
 			return fmt.Errorf("mp3: readHuffman failed: invalid index i: %d", i)
 		}
-		region_1_start = l[i]
+		region1Start = l[i]
 		j := sideInfo.Region0Count[gr][ch] + sideInfo.Region1Count[gr][ch] + 2
 		if j < 0 || len(l) <= j {
 			// TODO: Better error messages (#3)
 			return fmt.Errorf("mp3: readHuffman failed: invalid index j: %d", j)
 		}
-		region_2_start = l[j]
+		region2Start = l[j]
 	}
 	// Read big_values using tables according to region_x_start
-	for is_pos := 0; is_pos < sideInfo.BigValues[gr][ch]*2; is_pos++ {
+	for isPos := 0; isPos < sideInfo.BigValues[gr][ch]*2; isPos++ {
 		// #22
-		if is_pos >= len(mainData.Is[gr][ch]) {
-			return fmt.Errorf("mp3: is_pos was too big: %d", is_pos)
+		if isPos >= len(mainData.Is[gr][ch]) {
+			return fmt.Errorf("mp3: isPos was too big: %d", isPos)
 		}
-		table_num := 0
-		if is_pos < region_1_start {
-			table_num = sideInfo.TableSelect[gr][ch][0]
-		} else if is_pos < region_2_start {
-			table_num = sideInfo.TableSelect[gr][ch][1]
-		} else {
-			table_num = sideInfo.TableSelect[gr][ch][2]
+		var tableNum int
+		switch {
+		case isPos < region1Start:
+			tableNum = sideInfo.TableSelect[gr][ch][0]
+		case isPos < region2Start:
+			tableNum = sideInfo.TableSelect[gr][ch][1]
+		default:
+			tableNum = sideInfo.TableSelect[gr][ch][2]
 		}
 		// Get next Huffman coded words
-		x, y, _, _, err := huffman.Decode(m, table_num)
+		x, y, _, _, err := huffman.Decode(m, tableNum)
 		if err != nil {
 			return err
 		}
 		// In the big_values area there are two freq lines per Huffman word
-		mainData.Is[gr][ch][is_pos] = float32(x)
-		is_pos++
-		mainData.Is[gr][ch][is_pos] = float32(y)
+		mainData.Is[gr][ch][isPos] = float32(x)
+		isPos++
+		mainData.Is[gr][ch][isPos] = float32(y)
 	}
-	// Read small values until is_pos = 576 or we run out of huffman data
+	// Read small values until isPos = 576 or we run out of huffman data
 	// TODO: Is this comment wrong?
-	table_num := sideInfo.Count1TableSelect[gr][ch] + 32
-	is_pos := sideInfo.BigValues[gr][ch] * 2
-	for is_pos <= 572 && m.BitPos() <= bit_pos_end {
+	tableNum := sideInfo.Count1TableSelect[gr][ch] + 32
+	isPos := sideInfo.BigValues[gr][ch] * 2
+	for isPos <= 572 && m.BitPos() <= bitPosEnd {
 		// Get next Huffman coded words
-		x, y, v, w, err := huffman.Decode(m, table_num)
+		x, y, v, w, err := huffman.Decode(m, tableNum)
 		if err != nil {
 			return err
 		}
-		mainData.Is[gr][ch][is_pos] = float32(v)
-		is_pos++
-		if is_pos >= consts.SamplesPerGr {
+		mainData.Is[gr][ch][isPos] = float32(v)
+		isPos++
+		if isPos >= consts.SamplesPerGr {
 			break
 		}
-		mainData.Is[gr][ch][is_pos] = float32(w)
-		is_pos++
-		if is_pos >= consts.SamplesPerGr {
+		mainData.Is[gr][ch][isPos] = float32(w)
+		isPos++
+		if isPos >= consts.SamplesPerGr {
 			break
 		}
-		mainData.Is[gr][ch][is_pos] = float32(x)
-		is_pos++
-		if is_pos >= consts.SamplesPerGr {
+		mainData.Is[gr][ch][isPos] = float32(x)
+		isPos++
+		if isPos >= consts.SamplesPerGr {
 			break
 		}
-		mainData.Is[gr][ch][is_pos] = float32(y)
-		is_pos++
+		mainData.Is[gr][ch][isPos] = float32(y)
+		isPos++
 	}
 	// Check that we didn't read past the end of this section
-	if m.BitPos() > (bit_pos_end + 1) {
+	if m.BitPos() > (bitPosEnd + 1) {
 		// Remove last words read
-		is_pos -= 4
+		isPos -= 4
 	}
-	if is_pos < 0 {
-		is_pos = 0
+	if isPos < 0 {
+		isPos = 0
 	}
 
 	// Setup count1 which is the index of the first sample in the rzero reg.
-	sideInfo.Count1[gr][ch] = is_pos
+	sideInfo.Count1[gr][ch] = isPos
 
 	// Zero out the last part if necessary
-	for is_pos < consts.SamplesPerGr {
-		mainData.Is[gr][ch][is_pos] = 0.0
-		is_pos++
+	for isPos < consts.SamplesPerGr {
+		mainData.Is[gr][ch][isPos] = 0.0
+		isPos++
 	}
 	// Set the bitpos to point to the next part to read
-	m.SetPos(bit_pos_end + 1)
+	m.SetPos(bitPosEnd + 1)
 	return nil
 }

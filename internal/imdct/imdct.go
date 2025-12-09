@@ -21,10 +21,10 @@ import (
 var imdctWinData = [4][36]float32{}
 
 func init() {
-	for i := 0; i < 36; i++ {
+	for i := range 36 {
 		imdctWinData[0][i] = float32(math.Sin(math.Pi / 36 * (float64(i) + 0.5)))
 	}
-	for i := 0; i < 18; i++ {
+	for i := range 18 {
 		imdctWinData[1][i] = float32(math.Sin(math.Pi / 36 * (float64(i) + 0.5)))
 	}
 	for i := 18; i < 24; i++ {
@@ -36,13 +36,13 @@ func init() {
 	for i := 30; i < 36; i++ {
 		imdctWinData[1][i] = 0.0
 	}
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		imdctWinData[2][i] = float32(math.Sin(math.Pi / 12 * (float64(i) + 0.5)))
 	}
 	for i := 12; i < 36; i++ {
 		imdctWinData[2][i] = 0.0
 	}
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		imdctWinData[3][i] = 0.0
 	}
 	for i := 6; i < 12; i++ {
@@ -60,8 +60,8 @@ var cosN12 = [6][12]float32{}
 
 func init() {
 	const N = 12
-	for i := 0; i < 6; i++ {
-		for j := 0; j < 12; j++ {
+	for i := range 6 {
+		for j := range 12 {
 			cosN12[i][j] = float32(math.Cos(math.Pi / (2 * N) * (2*float64(j) + 1 + N/2) * (2*float64(i) + 1)))
 		}
 	}
@@ -71,8 +71,8 @@ var cosN36 = [18][36]float32{}
 
 func init() {
 	const N = 36
-	for i := 0; i < 18; i++ {
-		for j := 0; j < 36; j++ {
+	for i := range 18 {
+		for j := range 36 {
 			cosN36[i][j] = float32(math.Cos(math.Pi / (2 * N) * (2*float64(j) + 1 + N/2) * (2*float64(i) + 1)))
 		}
 	}
@@ -83,25 +83,25 @@ func Win(in []float32, blockType int) []float32 {
 	if blockType == 2 {
 		iwd := imdctWinData[blockType]
 		const N = 12
-		for i := 0; i < 3; i++ {
-			for p := 0; p < N; p++ {
+		for i := range 3 {
+			for p := range N {
 				sum := float32(0.0)
-				for m := 0; m < N/2; m++ {
+				for m := range N / 2 {
 					sum += in[i+3*m] * cosN12[m][p]
 				}
-				out[6*i+p+6] += sum * iwd[p]
+				out[6*i+p+6] += sum * iwd[p] //nolint:gosec // p < 12 and iwd is [36]float32
 			}
 		}
 		return out
 	}
 	const N = 36
 	iwd := imdctWinData[blockType]
-	for p := 0; p < N; p++ {
+	for p := range N {
 		sum := float32(0.0)
-		for m := 0; m < N/2; m++ {
+		for m := range N / 2 {
 			sum += in[m] * cosN36[m][p]
 		}
-		out[p] = sum * iwd[p]
+		out[p] = sum * iwd[p] //nolint:gosec // p < 36 and iwd is [36]float32
 	}
 	return out
 }

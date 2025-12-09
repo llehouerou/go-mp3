@@ -17,7 +17,7 @@ package huffman
 import (
 	"fmt"
 
-	"github.com/hajimehoshi/go-mp3/internal/bits"
+	"github.com/llehouerou/go-mp3/internal/bits"
 )
 
 var huffmanTable = []uint16{
@@ -345,20 +345,20 @@ var huffmanMain = [...]huffTables{
 	{huffmanTable[2773:], 31, 0},   // Table 33
 }
 
-func Decode(m *bits.Bits, table_num int) (x, y, v, w int, err error) {
+func Decode(m *bits.Bits, tableNum int) (x, y, v, w int, err error) {
 	point := 0
-	error := 1
+	decodeError := 1
 	bitsleft := 32
-	treelen := huffmanMain[table_num].treelen
-	linbits := huffmanMain[table_num].linbits
+	treelen := huffmanMain[tableNum].treelen
+	linbits := huffmanMain[tableNum].linbits
 	if treelen == 0 { // Check for empty tables
 		return 0, 0, 0, 0, nil
 	}
-	htptr := huffmanMain[table_num].hufftable
+	htptr := huffmanMain[tableNum].hufftable
 	for { // Start reading the Huffman code word,bit by bit
 		// Check if we've matched a code word
 		if (htptr[point] & 0xff00) == 0 {
-			error = 0
+			decodeError = 0
 			x = int((htptr[point] >> 4) & 0xf)
 			y = int(htptr[point] & 0xf)
 			break
@@ -379,16 +379,16 @@ func Decode(m *bits.Bits, table_num int) (x, y, v, w int, err error) {
 			break
 		}
 	}
-	if error != 0 { // Check for error.
-		err := fmt.Errorf("mp3: illegal Huff code in data. bleft = %d, point = %d. tab = %d.",
-			bitsleft, point, table_num)
+	if decodeError != 0 { // Check for error.
+		err := fmt.Errorf("mp3: illegal Huff code in data, bleft = %d, point = %d, tab = %d",
+			bitsleft, point, tableNum)
 		return 0, 0, 0, 0, err
 	}
-	if table_num > 31 { // Process sign encodings for quadruples tables.
+	if tableNum > 31 { // Process sign encodings for quadruples tables.
 		v = (y >> 3) & 1
 		w = (y >> 2) & 1
 		x = (y >> 1) & 1
-		y = y & 1
+		y &= 1
 		if (v != 0) && (m.Bit() == 1) {
 			v = -v
 		}

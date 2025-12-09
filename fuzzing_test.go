@@ -19,7 +19,7 @@ import (
 	"testing"
 )
 
-func TestFuzzing(t *testing.T) {
+func TestFuzzing(_ *testing.T) {
 	inputs := []string{
 		// #3
 		"\xff\xfa500000000000\xff\xff0000" +

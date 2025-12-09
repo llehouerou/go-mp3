@@ -35,11 +35,12 @@ func (b *Bits) Bit() int {
 		// TODO: Should this return error?
 		return 0
 	}
-	tmp := uint(b.vec[b.bytePos]) >> (7 - uint(b.bitPos))
+	// bitPos is always 0-7 (controlled by modulo 8 arithmetic), so conversion is safe
+	tmp := uint(b.vec[b.bytePos]) >> (7 - uint(b.bitPos)) //nolint:gosec // bitPos is always 0-7
 	tmp &= 0x01
 	b.bytePos += (b.bitPos + 1) >> 3
 	b.bitPos = (b.bitPos + 1) & 0x07
-	return int(tmp)
+	return int(tmp) //nolint:gosec // tmp is always 0-1
 }
 
 func (b *Bits) Bits(num int) int {
@@ -53,11 +54,11 @@ func (b *Bits) Bits(num int) int {
 	bb := make([]byte, 4)
 	copy(bb, b.vec[b.bytePos:])
 	tmp := (uint32(bb[0]) << 24) | (uint32(bb[1]) << 16) | (uint32(bb[2]) << 8) | (uint32(bb[3]))
-	tmp <<= uint(b.bitPos)
-	tmp >>= (32 - uint(num))
+	tmp <<= uint(b.bitPos)   //nolint:gosec // bitPos is always 0-7, safe for uint conversion
+	tmp >>= (32 - uint(num)) //nolint:gosec // num is always 0-32 for MP3 parsing
 	b.bytePos += (b.bitPos + num) >> 3
 	b.bitPos = (b.bitPos + num) & 0x07
-	return int(tmp)
+	return int(tmp) //nolint:gosec // tmp fits in int after right shift
 }
 
 func (b *Bits) BitPos() int {

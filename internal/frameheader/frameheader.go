@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/hajimehoshi/go-mp3/internal/consts"
+	"github.com/llehouerou/go-mp3/internal/consts"
 )
 
 // A mepg1FrameHeader is MPEG1 Layer 1-3 frame header
@@ -51,13 +51,17 @@ func (f FrameHeader) SamplingFrequency() consts.SamplingFrequency {
 }
 
 func (f FrameHeader) SamplingFrequencyValue() (int, error) {
+	// LowSamplingFrequency returns 0 or 1, so conversion to uint is safe
+	lsf := uint(f.LowSamplingFrequency()) //nolint:gosec // LowSamplingFrequency returns 0 or 1
 	switch f.SamplingFrequency() {
 	case 0:
-		return 44100 >> uint(f.LowSamplingFrequency()), nil
+		return 44100 >> lsf, nil
 	case 1:
-		return 48000 >> uint(f.LowSamplingFrequency()), nil
+		return 48000 >> lsf, nil
 	case 2:
-		return 32000 >> uint(f.LowSamplingFrequency()), nil
+		return 32000 >> lsf, nil
+	case consts.SamplingFrequencyReserved:
+		return 0, errors.New("mp3: frame header has invalid sample frequency")
 	}
 	return 0, errors.New("mp3: frame header has invalid sample frequency")
 }
@@ -127,6 +131,7 @@ func (f FrameHeader) BytesPerFrame() int {
 }
 
 func (f FrameHeader) Granules() int {
+	//nolint:gosec // LowSamplingFrequency returns 0 or 1, safe for uint conversion
 	return consts.GranulesMpeg1 >> uint(f.LowSamplingFrequency()) // MPEG2 uses only 1 granule
 }
 
@@ -191,28 +196,29 @@ func (f FrameHeader) FrameSize() (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	//nolint:gosec // LowSamplingFrequency returns 0 or 1, safe for uint conversion
 	size := ((144*f.Bitrate())/freq +
-		int(f.PaddingBit())) >> uint(f.LowSamplingFrequency())
+		f.PaddingBit()) >> uint(f.LowSamplingFrequency())
 	return size, nil
 }
 
 func (f FrameHeader) SideInfoSize() int {
 	mono := f.Mode() == consts.ModeSingleChannel
-	var sideinfo_size int
+	var sideinfoSize int
 	if f.LowSamplingFrequency() == 1 {
 		if mono {
-			sideinfo_size = 9
+			sideinfoSize = 9
 		} else {
-			sideinfo_size = 17
+			sideinfoSize = 17
 		}
 	} else {
 		if mono {
-			sideinfo_size = 17
+			sideinfoSize = 17
 		} else {
-			sideinfo_size = 32
+			sideinfoSize = 32
 		}
 	}
-	return sideinfo_size
+	return sideinfoSize
 }
 
 func (f FrameHeader) NumberOfChannels() int {
@@ -229,12 +235,12 @@ type FullReader interface {
 func Read(source FullReader, position int64) (h FrameHeader, startPosition int64, err error) {
 	buf := make([]byte, 4)
 	if n, err := source.ReadFull(buf); n < 4 {
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			if n == 0 {
 				// Expected EOF
 				return 0, 0, io.EOF
 			}
-			return 0, 0, &consts.UnexpectedEOF{"readHeader (1)"}
+			return 0, 0, &consts.UnexpectedEOFError{At: "readHeader (1)"}
 		}
 		return 0, 0, err
 	}
@@ -251,8 +257,8 @@ func Read(source FullReader, position int64) (h FrameHeader, startPosition int64
 
 		buf := make([]byte, 1)
 		if _, err := source.ReadFull(buf); err != nil {
-			if err == io.EOF {
-				return 0, 0, &consts.UnexpectedEOF{"readHeader (2)"}
+			if errors.Is(err, io.EOF) {
+				return 0, 0, &consts.UnexpectedEOFError{At: "readHeader (2)"}
 			}
 			return 0, 0, err
 		}

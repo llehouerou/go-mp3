@@ -15,13 +15,14 @@
 package maindata
 
 import (
+	"errors"
 	"fmt"
 	"io"
 
-	"github.com/hajimehoshi/go-mp3/internal/bits"
-	"github.com/hajimehoshi/go-mp3/internal/consts"
-	"github.com/hajimehoshi/go-mp3/internal/frameheader"
-	"github.com/hajimehoshi/go-mp3/internal/sideinfo"
+	"github.com/llehouerou/go-mp3/internal/bits"
+	"github.com/llehouerou/go-mp3/internal/consts"
+	"github.com/llehouerou/go-mp3/internal/frameheader"
+	"github.com/llehouerou/go-mp3/internal/sideinfo"
 )
 
 type FullReader interface {
@@ -51,28 +52,28 @@ var scalefacSizesMpeg2 = [3][6][4]int{
 var nSlen2 = initSlen() /* MPEG 2.0 slen for 'normal' mode */
 
 func initSlen() (nSlen2 [512]int) {
-	for i := 0; i < 4; i++ {
-		for j := 0; j < 3; j++ {
+	for i := range 4 {
+		for j := range 3 {
 			n := j + i*3
-			nSlen2[n+500] = i | (j << 3) | (2 << 12) | (1 << 15)
+			nSlen2[n+500] = i | (j << 3) | (2 << 12) | (1 << 15) //nolint:gosec // max n+500 = 2+9+500=511 < 512
 		}
 	}
 
-	for i := 0; i < 5; i++ {
-		for j := 0; j < 5; j++ {
-			for k := 0; k < 4; k++ {
-				for l := 0; l < 4; l++ {
+	for i := range 5 {
+		for j := range 5 {
+			for k := range 4 {
+				for l := range 4 {
 					n := l + k*4 + j*16 + i*80
-					nSlen2[n] = i | (j << 3) | (k << 6) | (l << 9) | (0 << 12)
+					nSlen2[n] = i | (j << 3) | (k << 6) | (l << 9) | (0 << 12) //nolint:gosec // max n = 3+12+64+320=399 < 512
 				}
 			}
 		}
 	}
-	for i := 0; i < 5; i++ {
-		for j := 0; j < 5; j++ {
-			for k := 0; k < 4; k++ {
+	for i := range 5 {
+		for j := range 5 {
+			for k := range 4 {
 				n := k + j*4 + i*20
-				nSlen2[n+400] = i | (j << 3) | (k << 6) | (1 << 12)
+				nSlen2[n+400] = i | (j << 3) | (k << 6) | (1 << 12) //nolint:gosec // max n+400 = 3+16+80+400=499 < 512
 			}
 		}
 	}
@@ -89,19 +90,19 @@ func Read(source FullReader, prev *bits.Bits, header frameheader.FrameHeader, si
 	if framesize > 2000 {
 		return nil, nil, fmt.Errorf("mp3: framesize = %d", framesize)
 	}
-	sideinfo_size := header.SideInfoSize()
+	sideinfoSize := header.SideInfoSize()
 
 	// Main data size is the rest of the frame,including ancillary data
-	main_data_size := framesize - sideinfo_size - 4 // sync+header
+	mainDataSize := framesize - sideinfoSize - 4 // sync+header
 	// CRC is 2 bytes
 	if header.ProtectionBit() == 0 {
-		main_data_size -= 2
+		mainDataSize -= 2
 	}
 	// Assemble main data buffer with data from this frame and the previous
 	// two frames. main_data_begin indicates how many bytes from previous
 	// frames that should be used. This buffer is later accessed by the
 	// Bits function in the same way as the side info is.
-	m, err := read(source, prev, main_data_size, sideInfo.MainDataBegin)
+	m, err := read(source, prev, mainDataSize, sideInfo.MainDataBegin)
 	if err != nil {
 		// This could be due to not enough data in reservoir
 		return nil, nil, err
@@ -119,8 +120,8 @@ func getScaleFactorsMpeg2(m *bits.Bits, header frameheader.FrameHeader, sideInfo
 
 	md := &MainData{}
 
-	for ch := 0; ch < nch; ch++ {
-		part_2_start := m.BitPos()
+	for ch := range nch {
+		part2Start := m.BitPos()
 		numbits := 0
 		slen := nSlen2[sideInfo.ScalefacCompress[0][ch]]
 		sideInfo.Preflag[0][ch] = (slen >> 15) & 0x1
@@ -136,40 +137,40 @@ func getScaleFactorsMpeg2(m *bits.Bits, header frameheader.FrameHeader, sideInfo
 		var scaleFactors []int
 		d := (slen >> 12) & 0x7
 
-		for i := 0; i < 4; i++ {
+		for i := range 4 {
 			num := slen & 0x7
 			slen >>= 3
 			if num > 0 {
-				for j := 0; j < scalefacSizesMpeg2[n][d][i]; j++ {
+				for range scalefacSizesMpeg2[n][d][i] {
 					scaleFactors = append(scaleFactors, m.Bits(num))
 				}
 				numbits += scalefacSizesMpeg2[n][d][i] * num
 			} else {
-				for j := 0; j < scalefacSizesMpeg2[n][d][i]; j++ {
+				for range scalefacSizesMpeg2[n][d][i] {
 					scaleFactors = append(scaleFactors, 0)
 				}
 			}
 		}
 
 		n = (n << 1) + 1
-		for i := 0; i < n; i++ {
+		for range n {
 			scaleFactors = append(scaleFactors, 0)
 		}
 
 		if len(scaleFactors) == 22 {
-			for i := 0; i < 22; i++ {
+			for i := range 22 {
 				md.ScalefacL[0][ch][i] = scaleFactors[i]
 			}
 		} else {
-			for x := 0; x < 13; x++ {
-				for i := 0; i < 3; i++ {
+			for x := range 13 {
+				for i := range 3 {
 					md.ScalefacS[0][ch][x][i] = scaleFactors[(x*3)+i]
 				}
 			}
 		}
 
 		// Read Huffman coded data. Skip stuffing bits.
-		if err := readHuffman(m, header, sideInfo, md, part_2_start, 0, ch); err != nil {
+		if err := readHuffman(m, header, sideInfo, md, part2Start, 0, ch); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -179,35 +180,35 @@ func getScaleFactorsMpeg2(m *bits.Bits, header frameheader.FrameHeader, sideInfo
 
 func getScaleFactorsMpeg1(nch int, m *bits.Bits, header frameheader.FrameHeader, sideInfo *sideinfo.SideInfo) (*MainData, *bits.Bits, error) {
 	md := &MainData{}
-	for gr := 0; gr < 2; gr++ {
-		for ch := 0; ch < nch; ch++ {
-			part_2_start := m.BitPos()
+	for gr := range 2 {
+		for ch := range nch {
+			part2Start := m.BitPos()
 			// Number of bits in the bitstream for the bands
 			slen1 := scalefacSizesMpeg1[sideInfo.ScalefacCompress[gr][ch]][0]
 			slen2 := scalefacSizesMpeg1[sideInfo.ScalefacCompress[gr][ch]][1]
 			if sideInfo.WinSwitchFlag[gr][ch] == 1 && sideInfo.BlockType[gr][ch] == 2 {
 				if sideInfo.MixedBlockFlag[gr][ch] != 0 {
-					for sfb := 0; sfb < 8; sfb++ {
+					for sfb := range 8 {
 						md.ScalefacL[gr][ch][sfb] = m.Bits(slen1)
 					}
 					for sfb := 3; sfb < 12; sfb++ {
-						//slen1 for band 3-5,slen2 for 6-11
+						// slen1 for band 3-5,slen2 for 6-11
 						nbits := slen2
 						if sfb < 6 {
 							nbits = slen1
 						}
-						for win := 0; win < 3; win++ {
+						for win := range 3 {
 							md.ScalefacS[gr][ch][sfb][win] = m.Bits(nbits)
 						}
 					}
 				} else {
-					for sfb := 0; sfb < 12; sfb++ {
-						//slen1 for band 3-5,slen2 for 6-11
+					for sfb := range 12 {
+						// slen1 for band 3-5,slen2 for 6-11
 						nbits := slen2
 						if sfb < 6 {
 							nbits = slen1
 						}
-						for win := 0; win < 3; win++ {
+						for win := range 3 {
 							md.ScalefacS[gr][ch][sfb][win] = m.Bits(nbits)
 						}
 					}
@@ -215,13 +216,13 @@ func getScaleFactorsMpeg1(nch int, m *bits.Bits, header frameheader.FrameHeader,
 			} else {
 				// Scale factor bands 0-5
 				if sideInfo.Scfsi[ch][0] == 0 || gr == 0 {
-					for sfb := 0; sfb < 6; sfb++ {
+					for sfb := range 6 {
 						md.ScalefacL[gr][ch][sfb] = m.Bits(slen1)
 					}
 				} else if sideInfo.Scfsi[ch][0] == 1 && gr == 1 {
 					// Copy scalefactors from granule 0 to granule 1
 					// TODO: This is not listed on the spec.
-					for sfb := 0; sfb < 6; sfb++ {
+					for sfb := range 6 {
 						md.ScalefacL[1][ch][sfb] = md.ScalefacL[0][ch][sfb]
 					}
 				}
@@ -260,7 +261,7 @@ func getScaleFactorsMpeg1(nch int, m *bits.Bits, header frameheader.FrameHeader,
 				}
 			}
 			// Read Huffman coded data. Skip stuffing bits.
-			if err := readHuffman(m, header, sideInfo, md, part_2_start, gr, ch); err != nil {
+			if err := readHuffman(m, header, sideInfo, md, part2Start, gr, ch); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -269,7 +270,7 @@ func getScaleFactorsMpeg1(nch int, m *bits.Bits, header frameheader.FrameHeader,
 	return md, m, nil
 }
 
-func read(source FullReader, prev *bits.Bits, size int, offset int) (*bits.Bits, error) {
+func read(source FullReader, prev *bits.Bits, size, offset int) (*bits.Bits, error) {
 	if size > 1500 {
 		return nil, fmt.Errorf("mp3: size = %d", size)
 	}
@@ -280,8 +281,8 @@ func read(source FullReader, prev *bits.Bits, size int, offset int) (*bits.Bits,
 		// for decoding the next frame.
 		buf := make([]byte, size)
 		if n, err := source.ReadFull(buf); n < size {
-			if err == io.EOF {
-				return nil, &consts.UnexpectedEOF{"maindata.Read (1)"}
+			if errors.Is(err, io.EOF) {
+				return nil, &consts.UnexpectedEOFError{At: "maindata.Read (1)"}
 			}
 			return nil, err
 		}
@@ -296,8 +297,8 @@ func read(source FullReader, prev *bits.Bits, size int, offset int) (*bits.Bits,
 	// Read the main_data from file
 	buf := make([]byte, size)
 	if n, err := source.ReadFull(buf); n < size {
-		if err == io.EOF {
-			return nil, &consts.UnexpectedEOF{"maindata.Read (2)"}
+		if errors.Is(err, io.EOF) {
+			return nil, &consts.UnexpectedEOFError{At: "maindata.Read (2)"}
 		}
 		return nil, err
 	}
