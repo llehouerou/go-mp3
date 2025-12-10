@@ -109,7 +109,7 @@ func (d *Decoder) Seek(offset int64, whence int) (int64, error) {
 		if err := d.readFrame(); err != nil {
 			return 0, err
 		}
-		d.buf = d.buf[d.bytesPerFrame+(d.pos%d.bytesPerFrame):]
+		d.buf = d.buf[min(d.bytesPerFrame+(d.pos%d.bytesPerFrame), int64(len(d.buf))):]
 	} else {
 		if _, err := d.source.Seek(d.frameStarts[f], 0); err != nil {
 			return 0, err
@@ -196,6 +196,12 @@ const invalidLength = -1
 // e.g. when the given source is not io.Seeker.
 func (d *Decoder) Length() int64 {
 	return d.length
+}
+
+// BytesPerFrame returns the number of decoded bytes per MP3 frame.
+// This is useful for calculating frame timing or positions.
+func (d *Decoder) BytesPerFrame() int64 {
+	return d.bytesPerFrame
 }
 
 // NewDecoder decodes the given io.Reader and returns a decoded stream.
