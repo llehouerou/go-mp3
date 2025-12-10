@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/llehouerou/go-mp3/internal/consts"
 )
@@ -133,6 +134,32 @@ func (f FrameHeader) BytesPerFrame() int {
 func (f FrameHeader) Granules() int {
 	//nolint:gosec // LowSamplingFrequency returns 0 or 1, safe for uint conversion
 	return consts.GranulesMpeg1 >> uint(f.LowSamplingFrequency()) // MPEG2 uses only 1 granule
+}
+
+// SamplesPerFrame returns the number of samples per frame.
+// For MPEG1 Layer 3: 1152 samples (576 * 2 granules)
+// For MPEG2/2.5 Layer 3: 576 samples (576 * 1 granule)
+func (f FrameHeader) SamplesPerFrame() int {
+	return consts.SamplesPerGr * f.Granules()
+}
+
+// FrameDuration returns the duration of a single frame.
+func (f FrameHeader) FrameDuration() time.Duration {
+	sampleRate, err := f.SamplingFrequencyValue()
+	if err != nil {
+		return 0
+	}
+	return time.Duration(int64(time.Second) * int64(f.SamplesPerFrame()) / int64(sampleRate))
+}
+
+// BytesPerSecond returns the decoded bytes per second.
+// This is the sample rate multiplied by 4 (stereo 16-bit = 4 bytes per sample).
+func (f FrameHeader) BytesPerSecond() int {
+	sampleRate, err := f.SamplingFrequencyValue()
+	if err != nil {
+		return 0
+	}
+	return sampleRate * 4
 }
 
 // IsValid returns a boolean value indicating whether the header is valid or not.

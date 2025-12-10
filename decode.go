@@ -17,6 +17,7 @@ package mp3
 import (
 	"errors"
 	"io"
+	"time"
 
 	"github.com/llehouerou/go-mp3/internal/consts"
 	"github.com/llehouerou/go-mp3/internal/frame"
@@ -95,6 +96,12 @@ func (d *Decoder) Seek(offset int64, whence int) (int64, error) {
 	d.pos = npos
 	d.buf = nil
 	d.frame = nil
+
+	// Handle seeking to end of file - no frames to read
+	if d.length != invalidLength && d.pos >= d.length {
+		return npos, nil
+	}
+
 	f := d.pos / d.bytesPerFrame
 	// If the frame is not first, read the previous ahead of reading that
 	// because the previous frame can affect the targeted frame.
@@ -202,6 +209,128 @@ func (d *Decoder) Length() int64 {
 // This is useful for calculating frame timing or positions.
 func (d *Decoder) BytesPerFrame() int64 {
 	return d.bytesPerFrame
+}
+
+// Duration returns the total duration of the audio stream.
+// Returns -1 if the duration cannot be determined (e.g., non-seekable source).
+func (d *Decoder) Duration() time.Duration {
+	if d.length == invalidLength {
+		return -1
+	}
+	return d.bytesToDuration(d.length)
+}
+
+// Position returns the current playback position as a time.Duration.
+func (d *Decoder) Position() time.Duration {
+	return d.bytesToDuration(d.pos)
+}
+
+// Remaining returns the remaining duration from the current position.
+// Returns -1 if duration cannot be determined.
+func (d *Decoder) Remaining() time.Duration {
+	dur := d.Duration()
+	if dur < 0 {
+		return -1
+	}
+	return dur - d.Position()
+}
+
+// Progress returns the playback progress as a value between 0.0 and 1.0.
+// Returns -1 if progress cannot be determined.
+func (d *Decoder) Progress() float64 {
+	if d.length == invalidLength {
+		return -1
+	}
+	if d.length == 0 {
+		return 0
+	}
+	return float64(d.pos) / float64(d.length)
+}
+
+// SamplePosition returns the current position in samples (per channel).
+// Each sample is 4 bytes (stereo 16-bit).
+func (d *Decoder) SamplePosition() int64 {
+	return d.pos / 4
+}
+
+// SampleCount returns the total number of samples (per channel).
+// Returns -1 if the count cannot be determined.
+func (d *Decoder) SampleCount() int64 {
+	if d.length == invalidLength {
+		return -1
+	}
+	return d.length / 4
+}
+
+// SeekToSample seeks to the specified sample position.
+// Returns an error if seeking is not supported.
+// Negative positions are clamped to 0, positions beyond the end are clamped.
+func (d *Decoder) SeekToSample(sample int64) error {
+	// Check if seeking is supported
+	if d.length == invalidLength {
+		return errors.New("mp3: seek not supported on non-seekable source")
+	}
+
+	// Clamp to valid range
+	if sample < 0 {
+		sample = 0
+	}
+	maxSamples := d.SampleCount()
+	if sample > maxSamples {
+		sample = maxSamples
+	}
+
+	// Convert to bytes (4 bytes per sample)
+	bytes := sample * 4
+	_, err := d.Seek(bytes, io.SeekStart)
+	return err
+}
+
+// Skip seeks relative to the current position by the specified duration.
+// Positive values skip forward, negative values skip backward.
+// Returns an error if seeking is not supported.
+// The result is clamped to the valid range [0, Duration].
+func (d *Decoder) Skip(delta time.Duration) error {
+	return d.SeekToTime(d.Position() + delta)
+}
+
+// SeekToTime seeks to the specified absolute time position.
+// Returns an error if seeking is not supported.
+// Negative times are clamped to 0, times beyond duration are clamped to the end.
+func (d *Decoder) SeekToTime(t time.Duration) error {
+	// Check if seeking is supported
+	if d.length == invalidLength {
+		return errors.New("mp3: seek not supported on non-seekable source")
+	}
+
+	// Clamp to valid range
+	if t < 0 {
+		t = 0
+	}
+	maxDur := d.Duration()
+	if t > maxDur {
+		t = maxDur
+	}
+
+	// Convert to bytes and align to 4-byte sample boundary
+	bytes := d.durationToBytes(t)
+	bytes &^= 3 // Align to 4-byte boundary
+
+	_, err := d.Seek(bytes, io.SeekStart)
+	return err
+}
+
+// bytesToDuration converts a byte position to a time.Duration.
+func (d *Decoder) bytesToDuration(bytes int64) time.Duration {
+	// bytes = samples * 4 (stereo 16-bit)
+	// duration = samples / sampleRate = bytes / (sampleRate * 4)
+	return time.Duration(int64(time.Second) * bytes / int64(d.sampleRate*4))
+}
+
+// durationToBytes converts a time.Duration to a byte position.
+func (d *Decoder) durationToBytes(dur time.Duration) int64 {
+	// Formula: bytes = duration_seconds * sampleRate * 4 (stereo 16-bit)
+	return int64(dur) * int64(d.sampleRate*4) / int64(time.Second)
 }
 
 // NewDecoder decodes the given io.Reader and returns a decoded stream.
