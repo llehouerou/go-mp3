@@ -29,6 +29,7 @@ make coverage PKG=./internal/bits
 
 - Run `make fmt` before committing - this is enforced by the pre-commit hook
 - The pre-commit hook runs `make check` (format, lint, test) on every commit
+- Do not add license headers to new files
 
 ## Project Structure
 

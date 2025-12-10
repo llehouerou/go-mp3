@@ -52,11 +52,15 @@ func readHuffman(m *bits.Bits, header frameheader.FrameHeader, sideInfo *sideinf
 		}
 		region1Start = l[i]
 		j := sideInfo.Region0Count[gr][ch] + sideInfo.Region1Count[gr][ch] + 2
-		if j < 0 || len(l) <= j {
-			// TODO: Better error messages (#3)
+		if j < 0 {
 			return fmt.Errorf("mp3: readHuffman failed: invalid index j: %d", j)
 		}
-		region2Start = l[j]
+		// Clamp to the end of the scalefactor band table (matches mpg123/ffmpeg behavior)
+		if j >= len(l) {
+			region2Start = consts.SamplesPerGr
+		} else {
+			region2Start = l[j]
+		}
 	}
 	// Read big_values using tables according to region_x_start
 	for isPos := 0; isPos < sideInfo.BigValues[gr][ch]*2; isPos++ {
