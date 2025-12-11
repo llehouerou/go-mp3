@@ -80,7 +80,9 @@ func initSlen() (nSlen2 [512]int) {
 	return
 }
 
-func Read(source FullReader, prev *bits.Bits, header frameheader.FrameHeader, sideInfo *sideinfo.SideInfo) (*MainData, *bits.Bits, error) {
+// Read reads main data from the source and decodes scale factors.
+// If reuse is non-nil, it will be reused instead of allocating a new MainData.
+func Read(source FullReader, prev *bits.Bits, header frameheader.FrameHeader, sideInfo *sideinfo.SideInfo, reuse *MainData) (*MainData, *bits.Bits, error) {
 	nch := header.NumberOfChannels()
 	// Calculate header audio data size
 	framesize, err := header.FrameSize()
@@ -109,16 +111,23 @@ func Read(source FullReader, prev *bits.Bits, header frameheader.FrameHeader, si
 	}
 
 	if header.LowSamplingFrequency() == 1 {
-		return getScaleFactorsMpeg2(m, header, sideInfo)
+		return getScaleFactorsMpeg2(m, header, sideInfo, reuse)
 	}
-	return getScaleFactorsMpeg1(nch, m, header, sideInfo)
+	return getScaleFactorsMpeg1(nch, m, header, sideInfo, reuse)
 }
 
-func getScaleFactorsMpeg2(m *bits.Bits, header frameheader.FrameHeader, sideInfo *sideinfo.SideInfo) (*MainData, *bits.Bits, error) {
-
+func getScaleFactorsMpeg2(m *bits.Bits, header frameheader.FrameHeader, sideInfo *sideinfo.SideInfo, reuse *MainData) (*MainData, *bits.Bits, error) {
 	nch := header.NumberOfChannels()
 
-	md := &MainData{}
+	var md *MainData
+	if reuse != nil {
+		md = reuse
+		// Zero scale factors; Is array will be fully overwritten by readHuffman
+		md.ScalefacL = [2][2][22]int{}
+		md.ScalefacS = [2][2][13][3]int{}
+	} else {
+		md = &MainData{}
+	}
 
 	for ch := range nch {
 		part2Start := m.BitPos()
@@ -178,8 +187,16 @@ func getScaleFactorsMpeg2(m *bits.Bits, header frameheader.FrameHeader, sideInfo
 	return md, m, nil
 }
 
-func getScaleFactorsMpeg1(nch int, m *bits.Bits, header frameheader.FrameHeader, sideInfo *sideinfo.SideInfo) (*MainData, *bits.Bits, error) {
-	md := &MainData{}
+func getScaleFactorsMpeg1(nch int, m *bits.Bits, header frameheader.FrameHeader, sideInfo *sideinfo.SideInfo, reuse *MainData) (*MainData, *bits.Bits, error) {
+	var md *MainData
+	if reuse != nil {
+		md = reuse
+		// Zero scale factors; Is array will be fully overwritten by readHuffman
+		md.ScalefacL = [2][2][22]int{}
+		md.ScalefacS = [2][2][13][3]int{}
+	} else {
+		md = &MainData{}
+	}
 	for gr := range 2 {
 		for ch := range nch {
 			part2Start := m.BitPos()

@@ -92,10 +92,12 @@ func Read(source FullReader, position int64, prev *Frame) (frame *Frame, startPo
 	// signal to calling function so that decoding isn't done!
 	// Get main data (scalefactors and Huffman coded frequency data)
 	var prevM *bits.Bits
+	var reuseMainData *maindata.MainData
 	if prev != nil {
 		prevM = prev.mainDataBits
+		reuseMainData = prev.mainData
 	}
-	md, mdb, err := maindata.Read(source, prevM, h, si)
+	md, mdb, err := maindata.Read(source, prevM, h, si, reuseMainData)
 	if err != nil {
 		return nil, 0, err
 	}
