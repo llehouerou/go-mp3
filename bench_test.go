@@ -22,21 +22,36 @@ import (
 )
 
 func BenchmarkDecode(b *testing.B) {
-	buf, err := os.ReadFile("example/classic.mp3")
-	if err != nil {
-		b.Fatal(err)
+	benchmarks := []struct {
+		name string
+		file string
+	}{
+		{"small", "example/classic_lame.mp3"},
+		{"large", "example/classic.mp3"},
 	}
-	src := bytes.NewReader(buf)
-	for b.Loop() {
-		if _, err := src.Seek(0, io.SeekStart); err != nil {
-			b.Fatal(err)
-		}
-		d, err := NewDecoder(src)
+
+	for _, bm := range benchmarks {
+		buf, err := os.ReadFile(bm.file)
 		if err != nil {
 			b.Fatal(err)
 		}
-		if _, err := io.ReadAll(d); err != nil {
-			b.Fatal(err)
-		}
+		src := bytes.NewReader(buf)
+
+		b.Run(bm.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(buf)))
+			for b.Loop() {
+				if _, err := src.Seek(0, io.SeekStart); err != nil {
+					b.Fatal(err)
+				}
+				d, err := NewDecoder(src)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := io.ReadAll(d); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

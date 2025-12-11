@@ -1,4 +1,4 @@
-.PHONY: tools fmt lint test coverage check build install-hooks
+.PHONY: tools fmt lint test coverage check build install-hooks bench bench-save bench-compare profile-cpu profile-mem
 
 # Install/update tools
 tools:
@@ -41,3 +41,35 @@ build:
 install-hooks:
 	cp scripts/pre-commit .git/hooks/pre-commit
 	chmod +x .git/hooks/pre-commit
+
+# Run benchmarks with memory stats
+bench:
+	go test -bench=. -benchmem -count=10 ./...
+
+# Save benchmark results to baseline
+bench-save:
+	@mkdir -p benchmarks
+	go test -bench=. -benchmem -count=10 ./... > benchmarks/baseline.txt
+	@echo "Baseline saved to benchmarks/baseline.txt"
+
+# Compare current benchmarks against baseline
+bench-compare:
+	@if [ ! -f benchmarks/baseline.txt ]; then \
+		echo "No baseline found. Run 'make bench-save' first."; \
+		exit 1; \
+	fi
+	@mkdir -p benchmarks
+	go test -bench=. -benchmem -count=10 ./... > benchmarks/current.txt
+	benchstat benchmarks/baseline.txt benchmarks/current.txt
+
+# Generate CPU profile (uses small file for faster iteration)
+profile-cpu:
+	@mkdir -p benchmarks
+	go test -bench=BenchmarkDecode/small -benchmem -cpuprofile=benchmarks/cpu.prof -count=1
+	go tool pprof -http=:8080 benchmarks/cpu.prof
+
+# Generate memory profile
+profile-mem:
+	@mkdir -p benchmarks
+	go test -bench=BenchmarkDecode/small -benchmem -memprofile=benchmarks/mem.prof -count=1
+	go tool pprof -http=:8080 benchmarks/mem.prof

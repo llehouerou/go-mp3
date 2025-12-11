@@ -2,5 +2,7 @@
 .DS_Store
 
 coverage.out
+benchmarks/
 
 docs/
+*.test
