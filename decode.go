@@ -97,6 +97,11 @@ func (d *Decoder) Seek(offset int64, whence int) (int64, error) {
 	d.buf = nil
 	d.frame = nil
 
+	// Clamp negative positions to 0
+	if d.pos < 0 {
+		d.pos = 0
+	}
+
 	// Handle seeking to end of file - no frames to read
 	if d.length != invalidLength && d.pos >= d.length {
 		return npos, nil

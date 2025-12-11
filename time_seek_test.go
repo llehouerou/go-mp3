@@ -9,6 +9,39 @@ import (
 	"time"
 )
 
+// Test for Unread prepend semantics (issue #2)
+// When s.buf has existing data and Unread is called, the unread bytes
+// should be prepended (read first), not appended (read last).
+func TestSource_UnreadShouldPrependNotAppend(t *testing.T) {
+	// Create a source with underlying reader [I, J, K, ...]
+	reader := bytes.NewReader([]byte{'I', 'J', 'K', 'L', 'M'})
+	s := &source{
+		reader: reader,
+	}
+
+	// Simulate leftover data in s.buf: [G, H]
+	// This represents data that was buffered but not yet consumed
+	s.buf = []byte{'G', 'H'}
+
+	// Now "unread" bytes [D, E, F] - these should be read FIRST
+	s.Unread([]byte{'D', 'E', 'F'})
+
+	// Read 5 bytes - should get [D, E, F, G, H] (unread first, then leftover)
+	buf := make([]byte, 5)
+	n, err := s.ReadFull(buf)
+	if err != nil {
+		t.Fatalf("ReadFull failed: %v", err)
+	}
+	if n != 5 {
+		t.Fatalf("ReadFull returned %d bytes, expected 5", n)
+	}
+
+	expected := []byte{'D', 'E', 'F', 'G', 'H'}
+	if !bytes.Equal(buf, expected) {
+		t.Errorf("ReadFull returned %v, expected %v (unread bytes should come first)", buf, expected)
+	}
+}
+
 // nonSeekableReader wraps a reader and removes Seek capability
 type nonSeekableReader struct {
 	r io.Reader
@@ -1194,5 +1227,85 @@ func TestIntegration_ProgressTracking(t *testing.T) {
 	prog = d.Progress()
 	if prog < 0.99 || prog > 1.01 {
 		t.Errorf("Progress() at end = %f, expected ~1.0", prog)
+	}
+}
+
+// Test for negative seek position panic (issue #1)
+// The low-level Seek() method doesn't validate negative positions,
+// which causes an index out of bounds panic when accessing d.frameStarts[f]
+// where f is negative.
+func TestSeek_NegativeOffsetShouldNotPanic(t *testing.T) {
+	f, err := os.Open("example/classic.mp3")
+	if err != nil {
+		t.Fatalf("failed to open test file: %v", err)
+	}
+	defer f.Close()
+
+	d, err := NewDecoder(f)
+	if err != nil {
+		t.Fatalf("failed to create decoder: %v", err)
+	}
+
+	// This should NOT panic - it should return an error or clamp to 0
+	// Currently this panics with: runtime error: index out of range [-1]
+	// because f = -4609 / 4608 = -1, and d.frameStarts[-1] causes panic
+	_, err = d.Seek(-4609, io.SeekStart)
+	if err == nil {
+		// If no error, position should be clamped to 0
+		if pos, _ := d.Seek(0, io.SeekCurrent); pos < 0 {
+			t.Errorf("Seek to negative offset resulted in negative position: %d", pos)
+		}
+	}
+	// If error is returned, that's also acceptable behavior
+}
+
+func TestSeek_NegativeSeekCurrentShouldNotPanic(t *testing.T) {
+	f, err := os.Open("example/classic.mp3")
+	if err != nil {
+		t.Fatalf("failed to open test file: %v", err)
+	}
+	defer f.Close()
+
+	d, err := NewDecoder(f)
+	if err != nil {
+		t.Fatalf("failed to create decoder: %v", err)
+	}
+
+	// Seek to position 1000 bytes
+	if _, err := d.Seek(1000, io.SeekStart); err != nil {
+		t.Fatalf("initial seek failed: %v", err)
+	}
+
+	// Now seek backwards more than current position - this results in negative position
+	// d.pos = 1000 + (-5000) = -4000
+	// This should NOT panic
+	_, err = d.Seek(-5000, io.SeekCurrent)
+	if err == nil {
+		if pos, _ := d.Seek(0, io.SeekCurrent); pos < 0 {
+			t.Errorf("Seek to negative offset resulted in negative position: %d", pos)
+		}
+	}
+}
+
+func TestSeek_SeekEndNegativeBeyondStartShouldNotPanic(t *testing.T) {
+	f, err := os.Open("example/classic.mp3")
+	if err != nil {
+		t.Fatalf("failed to open test file: %v", err)
+	}
+	defer f.Close()
+
+	d, err := NewDecoder(f)
+	if err != nil {
+		t.Fatalf("failed to create decoder: %v", err)
+	}
+
+	// Seek to before the start using SeekEnd with large negative offset
+	// d.pos = d.Length() + (-d.Length() - 10000) = -10000
+	length := d.Length()
+	_, err = d.Seek(-length-10000, io.SeekEnd)
+	if err == nil {
+		if pos, _ := d.Seek(0, io.SeekCurrent); pos < 0 {
+			t.Errorf("Seek beyond start resulted in negative position: %d", pos)
+		}
 	}
 }
