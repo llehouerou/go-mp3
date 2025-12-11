@@ -471,8 +471,8 @@ func (f *Frame) hybridSynthesis(gr, ch int) {
 		imdct.Win(rawout[:], in[:], bt)
 		// Overlap add with stored vector into main_data vector
 		for i := range 18 {
-			f.mainData.Is[gr][ch][sb*18+i] = rawout[i] + f.store[ch][sb][i]
-			f.store[ch][sb][i] = rawout[i+18]
+			f.mainData.Is[gr][ch][sb*18+i] = rawout[i] + f.store[ch][sb][i] //nolint:gosec // i is bounded by range 18, rawout is [36]float32
+			f.store[ch][sb][i] = rawout[i+18]                               //nolint:gosec // i+18 < 36
 		}
 	}
 }
