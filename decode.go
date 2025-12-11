@@ -27,6 +27,10 @@ import (
 // A Decoder is a MP3-decoded stream.
 //
 // Decoder decodes its underlying source on the fly.
+//
+// A Decoder is not safe for concurrent use. If multiple goroutines need to
+// access the same Decoder (e.g., one for playback and one for seeking),
+// the caller must synchronize access with a mutex or similar mechanism.
 type Decoder struct {
 	source        *source
 	sampleRate    int
@@ -121,7 +125,7 @@ func (d *Decoder) Seek(offset int64, whence int) (int64, error) {
 		if err := d.readFrame(); err != nil {
 			return 0, err
 		}
-		d.buf = d.buf[min(d.bytesPerFrame+(d.pos%d.bytesPerFrame), int64(len(d.buf))):]
+		d.buf = d.buf[d.bytesPerFrame+(d.pos%d.bytesPerFrame):]
 	} else {
 		if _, err := d.source.Seek(d.frameStarts[f], 0); err != nil {
 			return 0, err
