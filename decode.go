@@ -188,8 +188,7 @@ func (d *Decoder) ensureFrameStartsAndLength() error {
 		if err != nil {
 			return err
 		}
-		buf := make([]byte, framesize-4)
-		if _, err := d.source.ReadFull(buf); err != nil {
+		if _, err := d.source.Seek(int64(framesize-4), io.SeekCurrent); err != nil {
 			if errors.Is(err, io.EOF) {
 				break
 			}
