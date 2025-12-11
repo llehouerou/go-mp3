@@ -96,4 +96,32 @@ This library decodes frames faithfully without attempting to compensate for enco
 - While LAME stores delay metadata in the first frame, not all encoders do
 - Automatic compensation would be unreliable across different MP3 sources
 
-If sample-accurate playback is critical for your use case, you may need to detect and skip the initial silence yourself, or use a format like FLAC or WAV that doesn't have this issue.
+If sample-accurate playback is critical for your use case, you can use the `lameinfo` package to parse LAME/Xing headers and get the exact encoder delay and padding values:
+
+```go
+import "github.com/llehouerou/go-mp3/lameinfo"
+
+// Read the first frame of the MP3 file
+// (after ID3 tags - the decoder handles this automatically)
+info, err := lameinfo.ParseFromReader(f)
+if err == nil && info.HasLAMEInfo() {
+    // Skip encoder delay + decoder delay samples at the start
+    samplesToSkip := info.TotalDelay()
+
+    // Trim padding samples from the end
+    samplesToTrim := info.TotalPadding()
+
+    fmt.Printf("Encoder: %s\n", info.LAMEVersion)
+    fmt.Printf("Skip %d samples at start, trim %d at end\n",
+        samplesToSkip, samplesToTrim)
+}
+```
+
+The `lameinfo` package provides:
+- `EncoderDelay` / `EncoderPadding`: Raw values from the LAME tag
+- `TotalDelay()`: Encoder delay + standard decoder delay (529 samples)
+- `TotalPadding()`: Samples to trim from the end
+- `FrameCount` / `ByteCount`: Total frames and bytes (for VBR files)
+- `TOC`: Seek table for accurate VBR seeking
+
+Note: Not all MP3 files have LAME/Xing headers. Files without these headers will return `ErrNoXingHeader`.
