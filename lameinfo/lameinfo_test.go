@@ -3,6 +3,8 @@ package lameinfo
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -461,5 +463,126 @@ func TestEncoderDelayPaddingBitPacking(t *testing.T) {
 				t.Errorf("EncoderPadding = %d, want %d", info.EncoderPadding, tt.padding)
 			}
 		})
+	}
+}
+
+// Integration tests using real LAME-encoded MP3 files
+
+func TestParse_RealLAMEFile(t *testing.T) {
+	// This file was encoded with: lame -V2
+	path := filepath.Join("..", "example", "classic_lame.mp3")
+	f, err := os.Open(path)
+	if err != nil {
+		t.Skipf("Test file not found: %v", err)
+	}
+	defer f.Close()
+
+	info, err := ParseFromReader(f)
+	if err != nil {
+		t.Fatalf("ParseFromReader() error = %v", err)
+	}
+
+	// Verify it's a Xing header (VBR)
+	if !info.IsXing {
+		t.Error("IsXing = false, want true (file is VBR)")
+	}
+
+	// Verify all flags are present (LAME -V2 sets all flags)
+	if !info.HasFrameCount() {
+		t.Error("HasFrameCount() = false, want true")
+	}
+	if !info.HasByteCount() {
+		t.Error("HasByteCount() = false, want true")
+	}
+	if !info.HasTOC() {
+		t.Error("HasTOC() = false, want true")
+	}
+	if !info.HasVBRScale() {
+		t.Error("HasVBRScale() = false, want true")
+	}
+
+	// Verify frame count is reasonable (10 seconds at 44100 Hz ≈ 383 frames)
+	// Each frame is 1152 samples, so 10s * 44100 / 1152 ≈ 383
+	if info.FrameCount < 300 || info.FrameCount > 500 {
+		t.Errorf("FrameCount = %d, want ~384 for 10 second file", info.FrameCount)
+	}
+
+	// Verify byte count matches file size (approximately)
+	stat, _ := os.Stat(path)
+	fileSize := stat.Size()
+	// Byte count should be close to file size (minus ID3 tags if any)
+	if int64(info.ByteCount) < fileSize/2 || int64(info.ByteCount) > fileSize {
+		t.Errorf("ByteCount = %d, file size = %d", info.ByteCount, fileSize)
+	}
+
+	// Verify LAME info is present
+	if !info.HasLAMEInfo() {
+		t.Fatal("HasLAMEInfo() = false, want true")
+	}
+
+	// Verify LAME version string
+	if info.LAMEVersion != "LAME3.100" {
+		t.Errorf("LAMEVersion = %q, want %q", info.LAMEVersion, "LAME3.100")
+	}
+
+	// Verify encoder delay is typical LAME value (576)
+	if info.EncoderDelay != 576 {
+		t.Errorf("EncoderDelay = %d, want 576", info.EncoderDelay)
+	}
+
+	// Verify encoder padding is reasonable (should be > 0 and < 2000)
+	if info.EncoderPadding == 0 || info.EncoderPadding > 2000 {
+		t.Errorf("EncoderPadding = %d, want reasonable value (1-2000)", info.EncoderPadding)
+	}
+
+	// Verify TotalDelay calculation
+	expectedDelay := int(info.EncoderDelay) + DecoderDelay
+	if info.TotalDelay() != expectedDelay {
+		t.Errorf("TotalDelay() = %d, want %d", info.TotalDelay(), expectedDelay)
+	}
+
+	// Verify VBR scale is reasonable (0-100)
+	if info.VBRScale > 100 {
+		t.Errorf("VBRScale = %d, want 0-100", info.VBRScale)
+	}
+
+	t.Logf("Parsed LAME file successfully:")
+	t.Logf("  Frame count: %d", info.FrameCount)
+	t.Logf("  Byte count: %d", info.ByteCount)
+	t.Logf("  VBR scale: %d", info.VBRScale)
+	t.Logf("  LAME version: %s", info.LAMEVersion)
+	t.Logf("  Encoder delay: %d", info.EncoderDelay)
+	t.Logf("  Encoder padding: %d", info.EncoderPadding)
+	t.Logf("  Total delay: %d samples", info.TotalDelay())
+	t.Logf("  Total padding: %d samples", info.TotalPadding())
+}
+
+func TestParse_RealFileWithoutLAME(t *testing.T) {
+	// This file was not encoded with LAME
+	path := filepath.Join("..", "example", "classic.mp3")
+	f, err := os.Open(path)
+	if err != nil {
+		t.Skipf("Test file not found: %v", err)
+	}
+	defer f.Close()
+
+	_, err = ParseFromReader(f)
+	if !errors.Is(err, ErrNoXingHeader) {
+		t.Errorf("ParseFromReader() error = %v, want ErrNoXingHeader", err)
+	}
+}
+
+func TestParse_RealMPEG2File(t *testing.T) {
+	// MPEG2 file without LAME header
+	path := filepath.Join("..", "example", "mpeg2.mp3")
+	f, err := os.Open(path)
+	if err != nil {
+		t.Skipf("Test file not found: %v", err)
+	}
+	defer f.Close()
+
+	_, err = ParseFromReader(f)
+	if !errors.Is(err, ErrNoXingHeader) {
+		t.Errorf("ParseFromReader() error = %v, want ErrNoXingHeader", err)
 	}
 }
