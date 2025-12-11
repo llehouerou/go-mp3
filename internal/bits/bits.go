@@ -14,10 +14,22 @@
 
 package bits
 
+import "errors"
+
+// ErrOutOfBounds is returned when attempting to read past the end of the buffer.
+var ErrOutOfBounds = errors.New("bits: read past end of buffer")
+
 type Bits struct {
 	vec     []byte
 	bitPos  int
 	bytePos int
+	err     error
+}
+
+// Err returns any error that occurred during bit reading operations.
+// Once an error occurs, subsequent reads will continue to return the error.
+func (b *Bits) Err() error {
+	return b.err
 }
 
 func New(vec []byte) *Bits {
@@ -32,7 +44,7 @@ func Append(bits *Bits, buf []byte) *Bits {
 
 func (b *Bits) Bit() int {
 	if len(b.vec) <= b.bytePos {
-		// TODO: Should this return error?
+		b.err = ErrOutOfBounds
 		return 0
 	}
 	// bitPos is always 0-7 (controlled by modulo 8 arithmetic), so conversion is safe
@@ -47,8 +59,11 @@ func (b *Bits) Bits(num int) int {
 	if num == 0 {
 		return 0
 	}
-	if len(b.vec) <= b.bytePos {
-		// TODO: Should this return error?
+	// Check if we have enough bits remaining
+	currentBitPos := b.bytePos*8 + b.bitPos
+	totalBits := len(b.vec) * 8
+	if currentBitPos+num > totalBits {
+		b.err = ErrOutOfBounds
 		return 0
 	}
 	bb := make([]byte, 4)
