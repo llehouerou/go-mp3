@@ -78,8 +78,10 @@ func init() {
 	}
 }
 
-func Win(in []float32, blockType int) []float32 {
-	out := make([]float32, 36)
+// Win performs the inverse modified DCT and windowing.
+// out must be a slice of length 36. It will be zeroed and filled with the result.
+func Win(out, in []float32, blockType int) {
+	clear(out)
 	if blockType == 2 {
 		iwd := imdctWinData[blockType]
 		const N = 12
@@ -92,7 +94,7 @@ func Win(in []float32, blockType int) []float32 {
 				out[6*i+p+6] += sum * iwd[p] //nolint:gosec // p < 12 and iwd is [36]float32
 			}
 		}
-		return out
+		return
 	}
 	const N = 36
 	iwd := imdctWinData[blockType]
@@ -103,5 +105,4 @@ func Win(in []float32, blockType int) []float32 {
 		}
 		out[p] = sum * iwd[p] //nolint:gosec // p < 36 and iwd is [36]float32
 	}
-	return out
 }

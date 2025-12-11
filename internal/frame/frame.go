@@ -450,6 +450,10 @@ func (f *Frame) antialias(gr, ch int) {
 }
 
 func (f *Frame) hybridSynthesis(gr, ch int) {
+	// Scratch buffers reused across all subbands (stack-allocated)
+	var in [18]float32
+	var rawout [36]float32
+
 	// Loop through all 32 subbands
 	for sb := range 32 {
 		// Determine blocktype for this subband
@@ -459,12 +463,11 @@ func (f *Frame) hybridSynthesis(gr, ch int) {
 			bt = 0
 		}
 		// Do the inverse modified DCT and windowing
-		in := make([]float32, 18)
 		for i := range in {
 			in[i] = f.mainData.Is[gr][ch][sb*18+i]
 		}
-		rawout := imdct.Win(in, bt)
-		// Overlapp add with stored vector into main_data vector
+		imdct.Win(rawout[:], in[:], bt)
+		// Overlap add with stored vector into main_data vector
 		for i := range 18 {
 			f.mainData.Is[gr][ch][sb*18+i] = rawout[i] + f.store[ch][sb][i]
 			f.store[ch][sb][i] = rawout[i+18]
