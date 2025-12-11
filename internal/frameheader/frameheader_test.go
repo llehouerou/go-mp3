@@ -1,6 +1,8 @@
 package frameheader
 
 import (
+	"errors"
+	"io"
 	"testing"
 	"time"
 )
@@ -132,5 +134,71 @@ func TestBytesPerSecond_MPEG2_22050(t *testing.T) {
 	want := 22050 * 4
 	if got != want {
 		t.Errorf("BytesPerSecond() for MPEG2 22050Hz = %d, want %d", got, want)
+	}
+}
+
+// mockReader implements FullReader for testing
+type mockReader struct {
+	data []byte
+	pos  int
+}
+
+func (m *mockReader) ReadFull(buf []byte) (int, error) {
+	if m.pos >= len(m.data) {
+		return 0, io.EOF
+	}
+	n := copy(buf, m.data[m.pos:])
+	m.pos += n
+	if n < len(buf) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func TestRead_SyncSearchLimit(t *testing.T) {
+	// Create data larger than MaxSyncSearchBytes (64KB) with no valid frame header.
+	// Use 0x00 bytes which will never form a valid sync word (0xFFE).
+	dataSize := 70000 // > 64KB
+	data := make([]byte, dataSize)
+	// Fill with zeros - no valid sync pattern possible
+
+	reader := &mockReader{data: data}
+	_, _, err := Read(reader, 0)
+
+	if err == nil {
+		t.Fatal("Read() should return error when sync search limit exceeded")
+	}
+
+	// Check that we get the specific sync limit error
+	var syncErr *SyncSearchLimitError
+	if !errors.As(err, &syncErr) {
+		t.Errorf("Read() error = %v, want *SyncSearchLimitError", err)
+	}
+}
+
+func TestRead_ValidHeaderWithinLimit(t *testing.T) {
+	// Create data with a valid header after some junk, but within the limit
+	junkSize := 1000 // Well within 64KB limit
+	data := make([]byte, junkSize+4)
+
+	// Put a valid MPEG1 Layer3 header at position junkSize
+	// 0xFFFB9000 is a valid header (see createMPEG1Header)
+	validHeader := uint32(0xFFFB9044) // Valid MPEG1 Layer3 128kbps 44100Hz stereo
+	data[junkSize] = byte(validHeader >> 24)
+	data[junkSize+1] = byte(validHeader >> 16)
+	data[junkSize+2] = byte(validHeader >> 8)
+	data[junkSize+3] = byte(validHeader)
+
+	reader := &mockReader{data: data}
+	header, pos, err := Read(reader, 0)
+
+	if err != nil {
+		t.Fatalf("Read() unexpected error: %v", err)
+	}
+	if pos != int64(junkSize) {
+		t.Errorf("Read() position = %d, want %d", pos, junkSize)
+	}
+	if !header.IsValid() {
+		t.Error("Read() returned invalid header")
 	}
 }

@@ -255,6 +255,21 @@ func (f FrameHeader) NumberOfChannels() int {
 	return 2
 }
 
+// MaxSyncSearchBytes is the maximum number of bytes to scan when searching
+// for a valid frame header sync word. This prevents excessive scanning on
+// non-MP3 files or corrupted data. 64KB matches FFmpeg and mpg123 defaults.
+const MaxSyncSearchBytes = 64 * 1024
+
+// SyncSearchLimitError is returned when the sync search limit is exceeded
+// without finding a valid frame header.
+type SyncSearchLimitError struct {
+	BytesSearched int64
+}
+
+func (e *SyncSearchLimitError) Error() string {
+	return fmt.Sprintf("mp3: no valid frame header found within %d bytes", e.BytesSearched)
+}
+
 type FullReader interface {
 	ReadFull([]byte) (int, error)
 }
@@ -277,7 +292,12 @@ func Read(source FullReader, position int64) (h FrameHeader, startPosition int64
 	b3 := uint32(buf[2])
 	b4 := uint32(buf[3])
 	header := FrameHeader((b1 << 24) | (b2 << 16) | (b3 << 8) | (b4 << 0))
+	bytesSearched := int64(4)
 	for !header.IsValid() {
+		if bytesSearched >= MaxSyncSearchBytes {
+			return 0, 0, &SyncSearchLimitError{BytesSearched: bytesSearched}
+		}
+
 		b1 = b2
 		b2 = b3
 		b3 = b4
@@ -292,6 +312,7 @@ func Read(source FullReader, position int64) (h FrameHeader, startPosition int64
 		b4 = uint32(buf[0])
 		header = FrameHeader((b1 << 24) | (b2 << 16) | (b3 << 8) | (b4 << 0))
 		position++
+		bytesSearched++
 	}
 
 	// If we get here we've found the sync word, and can decode the header
