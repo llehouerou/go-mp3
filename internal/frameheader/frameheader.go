@@ -163,6 +163,8 @@ func (f FrameHeader) BytesPerSecond() int {
 }
 
 // IsValid returns a boolean value indicating whether the header is valid or not.
+// This library only supports MP3 (MPEG Layer 3), so Layer 1 and Layer 2 headers
+// are rejected to prevent false sync detection on non-MP3 data.
 func (f FrameHeader) IsValid() bool {
 	const sync = 0xffe00000
 	if (f & sync) != sync {
@@ -177,7 +179,7 @@ func (f FrameHeader) IsValid() bool {
 	if f.SamplingFrequency() == consts.SamplingFrequencyReserved {
 		return false
 	}
-	if f.Layer() == consts.LayerReserved {
+	if f.Layer() != consts.Layer3 {
 		return false
 	}
 	if f.Emphasis() == 2 {

@@ -202,3 +202,85 @@ func TestRead_ValidHeaderWithinLimit(t *testing.T) {
 		t.Error("Read() returned invalid header")
 	}
 }
+
+func TestIsValid_RejectsNonLayer3(t *testing.T) {
+	// This library only supports MP3 (MPEG Layer 3).
+	// Headers with Layer 1 or Layer 2 should be rejected by IsValid()
+	// to prevent false sync detection on non-MP3 data.
+
+	tests := []struct {
+		name   string
+		header FrameHeader
+		want   bool
+	}{
+		{
+			name:   "Layer3 MPEG1 is valid",
+			header: FrameHeader(0xFFFB9044), // Layer bits = 01 (Layer3)
+			want:   true,
+		},
+		{
+			name:   "Layer1 MPEG1 is invalid",
+			header: FrameHeader(0xFFFF9044), // Layer bits = 11 (Layer1)
+			want:   false,
+		},
+		{
+			name:   "Layer2 MPEG1 is invalid",
+			header: FrameHeader(0xFFFD9044), // Layer bits = 10 (Layer2)
+			want:   false,
+		},
+		{
+			name:   "False sync 0xFFFFC420 (Layer1) is invalid",
+			header: FrameHeader(0xFFFFC420), // The actual false sync from Sleep Away.mp3
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.header.IsValid()
+			if got != tt.want {
+				t.Errorf("IsValid() = %v, want %v (header: 0x%08X)", got, tt.want, tt.header)
+			}
+		})
+	}
+}
+
+func TestRead_SkipsNonLayer3Headers(t *testing.T) {
+	// Simulate the "Sleep Away.mp3" scenario:
+	// Data contains a Layer1 false sync followed by valid Layer3 audio.
+	// The decoder should skip the Layer1 header and find the Layer3 header.
+
+	layer1Offset := 100
+	layer3Offset := 200
+
+	data := make([]byte, layer3Offset+4)
+
+	// Put a Layer1 header (false sync) at offset 100
+	// 0xFFFFC420 is the actual false sync from Sleep Away.mp3
+	layer1Header := uint32(0xFFFFC420)
+	data[layer1Offset] = byte(layer1Header >> 24)
+	data[layer1Offset+1] = byte(layer1Header >> 16)
+	data[layer1Offset+2] = byte(layer1Header >> 8)
+	data[layer1Offset+3] = byte(layer1Header)
+
+	// Put a valid Layer3 header at offset 200
+	layer3Header := uint32(0xFFFBB200) // The actual Layer3 header from Sleep Away.mp3
+	data[layer3Offset] = byte(layer3Header >> 24)
+	data[layer3Offset+1] = byte(layer3Header >> 16)
+	data[layer3Offset+2] = byte(layer3Header >> 8)
+	data[layer3Offset+3] = byte(layer3Header)
+
+	reader := &mockReader{data: data}
+	header, pos, err := Read(reader, 0)
+
+	if err != nil {
+		t.Fatalf("Read() unexpected error: %v", err)
+	}
+	// Should find the Layer3 header, not the Layer1 header
+	if pos != int64(layer3Offset) {
+		t.Errorf("Read() position = %d, want %d (should skip Layer1 false sync)", pos, layer3Offset)
+	}
+	if uint32(header) != layer3Header {
+		t.Errorf("Read() header = 0x%08X, want 0x%08X", header, layer3Header)
+	}
+}
