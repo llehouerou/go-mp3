@@ -54,6 +54,12 @@ func (d *Decoder) readFrame() error {
 			// TODO: Log here?
 			return io.EOF
 		}
+		// If we can't find a valid frame header, we've likely hit
+		// trailing metadata (APE tags, ID3v1, etc.) - treat as end of audio
+		var syncLimitErr *frameheader.SyncSearchLimitError
+		if errors.As(err, &syncLimitErr) {
+			return io.EOF
+		}
 		return err
 	}
 	d.buf = append(d.buf, d.frame.Decode()...)
@@ -176,6 +182,12 @@ func (d *Decoder) ensureFrameStartsAndLength() error {
 			var unexpectedEOF *consts.UnexpectedEOFError
 			if errors.As(err, &unexpectedEOF) {
 				// TODO: Log here?
+				break
+			}
+			// If we can't find a valid frame header, we've likely hit
+			// trailing metadata (APE tags, ID3v1, etc.) - treat as end of audio
+			var syncLimitErr *frameheader.SyncSearchLimitError
+			if errors.As(err, &syncLimitErr) {
 				break
 			}
 			return err
