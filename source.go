@@ -40,45 +40,46 @@ func (s *source) Seek(position int64, whence int) (int64, error) {
 }
 
 func (s *source) skipTags() error {
-	buf := make([]byte, 3)
-	if _, err := s.ReadFull(buf); err != nil {
-		return err
-	}
-	switch string(buf) {
-	case "TAG":
-		buf := make([]byte, 125)
-		if _, err := s.ReadFull(buf); err != nil {
-			return err
-		}
-
-	case "ID3":
-		// Skip version (2 bytes) and flag (1 byte)
+	for {
 		buf := make([]byte, 3)
 		if _, err := s.ReadFull(buf); err != nil {
 			return err
 		}
+		switch string(buf) {
+		case "TAG":
+			buf := make([]byte, 125)
+			if _, err := s.ReadFull(buf); err != nil {
+				return err
+			}
 
-		buf = make([]byte, 4)
-		n, err := s.ReadFull(buf)
-		if err != nil {
-			return err
-		}
-		if n != 4 {
+		case "ID3":
+			// Skip version (2 bytes) and flag (1 byte)
+			buf := make([]byte, 3)
+			if _, err := s.ReadFull(buf); err != nil {
+				return err
+			}
+
+			buf = make([]byte, 4)
+			n, err := s.ReadFull(buf)
+			if err != nil {
+				return err
+			}
+			if n != 4 {
+				return nil
+			}
+			//nolint:gosec // buf is guaranteed to have 4 elements after ReadFull check above
+			size := (uint32(buf[0]) << 21) | (uint32(buf[1]) << 14) |
+				(uint32(buf[2]) << 7) | uint32(buf[3])
+			buf = make([]byte, size)
+			if _, err := s.ReadFull(buf); err != nil {
+				return err
+			}
+
+		default:
+			s.Unread(buf)
 			return nil
 		}
-		//nolint:gosec // buf is guaranteed to have 4 elements after ReadFull check above
-		size := (uint32(buf[0]) << 21) | (uint32(buf[1]) << 14) |
-			(uint32(buf[2]) << 7) | uint32(buf[3])
-		buf = make([]byte, size)
-		if _, err := s.ReadFull(buf); err != nil {
-			return err
-		}
-
-	default:
-		s.Unread(buf)
 	}
-
-	return nil
 }
 
 func (s *source) rewind() error {

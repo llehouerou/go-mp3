@@ -453,6 +453,81 @@ func TestSyncSearchLimitError_IsHandledGracefully(t *testing.T) {
 	}
 }
 
+// createID3v2Tag creates an ID3v2 tag with the specified version and body size.
+// The body is filled with zeros (padding).
+func createID3v2Tag(majorVersion byte, bodySize int) []byte {
+	// ID3v2 size is stored as syncsafe integer (7 bits per byte)
+	syncsafeSize := make([]byte, 4)
+	syncsafeSize[0] = byte((bodySize >> 21) & 0x7F)
+	syncsafeSize[1] = byte((bodySize >> 14) & 0x7F)
+	syncsafeSize[2] = byte((bodySize >> 7) & 0x7F)
+	syncsafeSize[3] = byte(bodySize & 0x7F)
+
+	header := []byte{
+		'I', 'D', '3', // ID3 identifier
+		majorVersion, 0x00, // Version
+		0x00, // Flags
+		syncsafeSize[0], syncsafeSize[1], syncsafeSize[2], syncsafeSize[3],
+	}
+
+	tag := make([]byte, 10+bodySize)
+	copy(tag, header)
+	return tag
+}
+
+// TestDecoder_WithMultipleConsecutiveID3v2Tags tests that the decoder handles files
+// with multiple ID3v2 tags at the beginning (e.g., ID3v2.3 followed by ID3v2.4).
+// This is a common scenario when files are re-tagged by different software.
+func TestDecoder_WithMultipleConsecutiveID3v2Tags(t *testing.T) {
+	var buf bytes.Buffer
+
+	// Write first ID3v2.3 tag (like the real Bon Iver file: ~84KB)
+	// Using 100KB to ensure it's larger than sync search limit (64KB)
+	firstTagSize := 100 * 1024
+	buf.Write(createID3v2Tag(0x03, firstTagSize))
+
+	// Write second ID3v2.4 tag (like the real file: ~150KB)
+	secondTagSize := 150 * 1024
+	buf.Write(createID3v2Tag(0x04, secondTagSize))
+
+	// Write several MP3 frames
+	numFrames := 10
+	frame := createMinimalMP3Frame()
+	for range numFrames {
+		buf.Write(frame)
+	}
+
+	// Create decoder - should succeed even with multiple ID3 tags
+	reader := bytes.NewReader(buf.Bytes())
+	d, err := NewDecoder(reader)
+	if err != nil {
+		t.Fatalf("NewDecoder() failed: %v", err)
+	}
+
+	// Verify basic properties
+	if d.SampleRate() != 44100 {
+		t.Errorf("SampleRate() = %d, want 44100", d.SampleRate())
+	}
+
+	// Verify length
+	expectedPCMLength := int64(numFrames * 1152 * 4)
+	if d.Length() != expectedPCMLength {
+		t.Errorf("Length() = %d, want %d", d.Length(), expectedPCMLength)
+	}
+
+	// Try to decode all audio
+	pcm, err := io.ReadAll(d)
+	if err != nil {
+		t.Fatalf("ReadAll() failed: %v", err)
+	}
+
+	if int64(len(pcm)) != expectedPCMLength {
+		t.Errorf("Decoded %d bytes, want %d", len(pcm), expectedPCMLength)
+	}
+
+	t.Logf("Successfully decoded MP3 with two consecutive ID3v2 tags (audio: %d bytes)", len(pcm))
+}
+
 // TestSyncSearchLimitError_TypeAssertion verifies the error type can be properly detected.
 func TestSyncSearchLimitError_TypeAssertion(t *testing.T) {
 	err := &frameheader.SyncSearchLimitError{BytesSearched: 65536}
