@@ -84,112 +84,74 @@ func (s *SafeDecoder) Position() time.Duration {
 }
 ```
 
-## Known Limitations
+## Gapless Playback
 
-### Encoder Delay (Initial Silence)
+MP3 encoders add silence at the start (encoder delay) and end (padding) of files. This library automatically detects LAME/Xing metadata and trims this silence for seamless playback.
 
-MP3 encoders (especially LAME) introduce a delay at the start of the decoded audio, typically around 528-2000+ samples of silence. This is an inherent artifact of MP3 encoding, not a decoder bug.
-
-This library decodes frames faithfully without attempting to compensate for encoder-specific delays because:
-
-- The exact delay varies by encoder, version, and settings
-- While LAME stores delay metadata in the first frame, not all encoders do
-- Automatic compensation would be unreliable across different MP3 sources
-
-If sample-accurate playback is critical for your use case, you can use the `lameinfo` package to parse LAME/Xing headers and get the exact encoder delay and padding values.
-
-The `lameinfo` package provides:
-- `EncoderDelay` / `EncoderPadding`: Raw values from the LAME tag
-- `TotalDelay()`: Encoder delay + standard decoder delay (529 samples)
-- `TotalPadding()`: Samples to trim from the end
-- `FrameCount` / `ByteCount`: Total frames and bytes (for VBR files)
-- `TOC`: Seek table for accurate VBR seeking
-
-Note: Not all MP3 files have LAME/Xing headers. Files without these headers will return `ErrNoXingHeader`.
-
-### Example: Gapless Playback
+**Gapless is enabled by default.** The decoder automatically:
+- Parses LAME/Xing headers from the first frame
+- Skips encoder delay samples at the start
+- Trims padding samples at the end
+- Reports the trimmed length via `Length()` and `Duration()`
 
 ```go
-package main
-
-import (
-    "io"
-    "os"
-
-    "github.com/llehouerou/go-mp3"
-    "github.com/llehouerou/go-mp3/lameinfo"
-)
-
-// GaplessDecoder wraps mp3.Decoder to skip encoder delay and padding.
-type GaplessDecoder struct {
-    decoder     *mp3.Decoder
-    skipStart   int64 // bytes to skip at start
-    trimEnd     int64 // bytes to trim from end
-    actualLen   int64 // actual audio length in bytes
-    pos         int64 // current position in gapless stream
+// Gapless playback works automatically
+d, err := mp3.NewDecoder(file)
+if err != nil {
+    panic(err)
 }
 
-// NewGaplessDecoder creates a decoder that compensates for encoder delay/padding.
-func NewGaplessDecoder(f *os.File) (*GaplessDecoder, error) {
-    // First, try to parse LAME info from the beginning of the file
-    info, lameErr := lameinfo.ParseFromReader(f)
+// Length() returns the trimmed (actual audio) length
+fmt.Printf("Duration: %v\n", d.Duration())
+fmt.Printf("Samples: %d\n", d.SampleCount())
 
-    // Rewind file for the MP3 decoder
-    if _, err := f.Seek(0, io.SeekStart); err != nil {
-        return nil, err
-    }
-
-    // Create the MP3 decoder
-    decoder, err := mp3.NewDecoder(f)
-    if err != nil {
-        return nil, err
-    }
-
-    g := &GaplessDecoder{
-        decoder:   decoder,
-        actualLen: decoder.Length(),
-    }
-
-    // If we have LAME info, calculate skip/trim values
-    if lameErr == nil && info.HasLAMEInfo() {
-        // Convert samples to bytes (4 bytes per sample: stereo 16-bit)
-        g.skipStart = int64(info.TotalDelay()) * 4
-        g.trimEnd = int64(info.TotalPadding()) * 4
-        g.actualLen = decoder.Length() - g.skipStart - g.trimEnd
-    }
-
-    // Skip the initial delay
-    if g.skipStart > 0 {
-        if _, err := decoder.Seek(g.skipStart, io.SeekStart); err != nil {
-            return nil, err
-        }
-    }
-
-    return g, nil
+// Access gapless metadata if needed
+if info := d.GaplessInfo(); info != nil {
+    fmt.Printf("Encoder: %s\n", info.LAMEVersion)
+    fmt.Printf("Delay: %d samples\n", info.TotalDelay())
+    fmt.Printf("Padding: %d samples\n", info.TotalPadding())
 }
 
-func (g *GaplessDecoder) Read(p []byte) (int, error) {
-    // Calculate how much we can read before hitting the trim point
-    remaining := g.actualLen - g.pos
-    if remaining <= 0 {
-        return 0, io.EOF
-    }
+// Get raw (untrimmed) length for comparison
+fmt.Printf("Raw length: %d bytes\n", d.RawLength())
+```
 
-    // Limit read to remaining actual audio
-    if int64(len(p)) > remaining {
-        p = p[:remaining]
-    }
+### Disabling Gapless
 
-    n, err := g.decoder.Read(p)
-    g.pos += int64(n)
-    return n, err
-}
+To decode without trimming (original behavior):
 
-func (g *GaplessDecoder) Length() int64 {
-    return g.actualLen
-}
+```go
+opts := mp3.DecoderOptions{Gapless: false}
+d, err := mp3.NewDecoderWithOptions(file, opts)
+```
 
-func (g *GaplessDecoder) SampleRate() int {
-    return g.decoder.SampleRate()
+### Supported Encoders
+
+Gapless playback works with files encoded by:
+- **LAME** (all versions)
+- **ffmpeg/libavcodec** (Lavc)
+- **Gogo** and other LAME-compatible encoders
+
+Files without LAME/Xing headers are decoded normally without trimming.
+
+### The lameinfo Package
+
+For advanced use cases, the `lameinfo` package provides direct access to LAME/Xing header data:
+
+```go
+import "github.com/llehouerou/go-mp3/lameinfo"
+
+info, err := lameinfo.ParseFromReader(file)
+if err == nil {
+    fmt.Printf("Frame count: %d\n", info.FrameCount)
+    fmt.Printf("Byte count: %d\n", info.ByteCount)
+    fmt.Printf("VBR scale: %d\n", info.VBRScale)
+    fmt.Printf("Encoder delay: %d\n", info.EncoderDelay)
+    fmt.Printf("Encoder padding: %d\n", info.EncoderPadding)
 }
 ```
+
+## Known Limitations
+
+- **Gapless requires seekable source**: Gapless trimming only works with `io.Seeker` sources (like `*os.File`). Non-seekable streams are decoded without trimming.
+- **Not all files have LAME headers**: Files without LAME/Xing metadata are decoded normally without gapless adjustment.
