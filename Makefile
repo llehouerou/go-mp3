@@ -1,16 +1,11 @@
-.PHONY: tools fmt lint test coverage check build install-hooks bench bench-save bench-compare profile-cpu profile-mem
-
-# Install/update tools
-tools:
-	go install github.com/incu6us/goimports-reviser/v3@latest
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+.PHONY: fmt lint test coverage check build install-hooks bench bench-save bench-compare profile-cpu profile-mem
 
 # Format all Go files
-fmt: tools
+fmt:
 	goimports-reviser -format -recursive .
 
 # Lint
-lint: tools
+lint:
 	golangci-lint run
 
 # Run tests (use PKG=./path/to/package to test specific package)

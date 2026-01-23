@@ -1,5 +1,6 @@
 *~
 .DS_Store
+.direnv/
 
 coverage.out
 benchmarks/
