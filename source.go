@@ -120,3 +120,24 @@ func (s *source) ReadFull(buf []byte) (int, error) {
 	s.pos += int64(n)
 	return n + read, err
 }
+
+// Read implements io.Reader. It reads from the internal buffer first,
+// then from the underlying reader.
+func (s *source) Read(buf []byte) (int, error) {
+	read := 0
+	if s.buf != nil {
+		read = copy(buf, s.buf)
+		if len(s.buf) > read {
+			s.buf = s.buf[read:]
+		} else {
+			s.buf = nil
+		}
+		if len(buf) == read {
+			return read, nil
+		}
+	}
+
+	n, err := s.reader.Read(buf[read:])
+	s.pos += int64(n)
+	return n + read, err
+}

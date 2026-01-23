@@ -275,9 +275,11 @@ func isLAMEVersion(s string) bool {
 		return false
 	}
 	// LAME versions start with "LAME" or "L3.9" (older format)
-	// Some other encoders also put their name here
+	// Some other encoders also put their name here:
+	// - Gogo/GOGO: another LAME-based encoder
+	// - Lavc: ffmpeg/libavcodec encoder
 	prefix := s[:4]
-	return prefix == "LAME" || prefix == "L3.9" || prefix == "Gogo" || prefix == "GOGO"
+	return prefix == "LAME" || prefix == "L3.9" || prefix == "Gogo" || prefix == "GOGO" || prefix == "Lavc"
 }
 
 // ParseFromReader reads the first MP3 frame from a reader and parses the LAME/Xing header.

@@ -22,7 +22,21 @@ import (
 	"github.com/llehouerou/go-mp3/internal/consts"
 	"github.com/llehouerou/go-mp3/internal/frame"
 	"github.com/llehouerou/go-mp3/internal/frameheader"
+	"github.com/llehouerou/go-mp3/lameinfo"
 )
+
+// DecoderOptions configures the MP3 decoder behavior.
+type DecoderOptions struct {
+	// Gapless enables gapless playback by trimming encoder delay and padding.
+	// When true (default), the decoder reads LAME/Xing metadata and adjusts
+	// the audio stream to remove encoder-added silence.
+	Gapless bool
+}
+
+// DefaultDecoderOptions returns options with gapless enabled.
+func DefaultDecoderOptions() DecoderOptions {
+	return DecoderOptions{Gapless: true}
+}
 
 // A Decoder is a MP3-decoded stream.
 //
@@ -34,12 +48,18 @@ import (
 type Decoder struct {
 	source        *source
 	sampleRate    int
-	length        int64
+	length        int64 // Virtual (trimmed) length, or -1
+	rawLength     int64 // Raw decoded bytes before trimming, or -1
 	frameStarts   []int64
 	buf           []byte
 	frame         *frame.Frame
-	pos           int64
+	pos           int64 // Virtual position (after trimming)
 	bytesPerFrame int64
+
+	// Gapless playback
+	lameInfo       *lameinfo.Info
+	skipStartBytes int64 // Bytes to skip at start (Xing frame + delay)
+	skipEndBytes   int64 // Bytes to trim at end (padding)
 }
 
 func (d *Decoder) readFrame() error {
@@ -69,8 +89,25 @@ func (d *Decoder) readFrame() error {
 // Read is io.Reader's Read.
 func (d *Decoder) Read(buf []byte) (int, error) {
 	for len(d.buf) == 0 {
+		// Check if we've reached the virtual end (gapless mode)
+		if d.lameInfo != nil && d.length != invalidLength && d.pos >= d.length {
+			return 0, io.EOF
+		}
+
 		if err := d.readFrame(); err != nil {
 			return 0, err
+		}
+
+		// If gapless, trim buffer if it would exceed the virtual end
+		if d.lameInfo != nil && d.length != invalidLength {
+			remaining := d.length - d.pos
+			if remaining <= 0 {
+				d.buf = nil
+				return 0, io.EOF
+			}
+			if int64(len(d.buf)) > remaining {
+				d.buf = d.buf[:remaining]
+			}
 		}
 	}
 	n := copy(buf, d.buf)
@@ -103,21 +140,31 @@ func (d *Decoder) Seek(offset int64, whence int) (int64, error) {
 	default:
 		return 0, errors.New("mp3: invalid whence")
 	}
+
+	// Clamp to valid range
+	if npos < 0 {
+		npos = 0
+	}
+	if d.length != invalidLength && npos > d.length {
+		npos = d.length
+	}
+
 	d.pos = npos
 	d.buf = nil
 	d.frame = nil
-
-	// Clamp negative positions to 0
-	if d.pos < 0 {
-		d.pos = 0
-	}
 
 	// Handle seeking to end of file - no frames to read
 	if d.length != invalidLength && d.pos >= d.length {
 		return npos, nil
 	}
 
-	f := d.pos / d.bytesPerFrame
+	// Convert virtual position to raw position for frame lookup
+	rawPos := npos
+	if d.lameInfo != nil {
+		rawPos = npos + d.skipStartBytes
+	}
+
+	f := rawPos / d.bytesPerFrame
 	// If the frame is not first, read the previous ahead of reading that
 	// because the previous frame can affect the targeted frame.
 	if f > 0 {
@@ -131,15 +178,34 @@ func (d *Decoder) Seek(offset int64, whence int) (int64, error) {
 		if err := d.readFrame(); err != nil {
 			return 0, err
 		}
-		d.buf = d.buf[d.bytesPerFrame+(d.pos%d.bytesPerFrame):]
+		d.buf = d.buf[d.bytesPerFrame+(rawPos%d.bytesPerFrame):]
 	} else {
-		if _, err := d.source.Seek(d.frameStarts[f], 0); err != nil {
+		// Seeking near start - need to handle gapless skip
+		if _, err := d.source.Seek(d.frameStarts[0], 0); err != nil {
 			return 0, err
 		}
-		if err := d.readFrame(); err != nil {
-			return 0, err
+
+		if d.lameInfo != nil {
+			// Re-apply gapless start skipping, then seek within remaining buffer
+			d.buf = nil
+			d.skipInitialSamples()
+			// Now skip to the requested virtual position within the buffer
+			if npos > 0 {
+				for int64(len(d.buf)) < npos {
+					if err := d.readFrame(); err != nil {
+						return 0, err
+					}
+				}
+				if npos <= int64(len(d.buf)) {
+					d.buf = d.buf[npos:]
+				}
+			}
+		} else {
+			if err := d.readFrame(); err != nil {
+				return 0, err
+			}
+			d.buf = d.buf[npos:]
 		}
-		d.buf = d.buf[d.pos:]
 	}
 	return npos, nil
 }
@@ -229,6 +295,22 @@ func (d *Decoder) Length() int64 {
 // This is useful for calculating frame timing or positions.
 func (d *Decoder) BytesPerFrame() int64 {
 	return d.bytesPerFrame
+}
+
+// GaplessInfo returns the LAME/Xing gapless metadata if available.
+// Returns nil if no gapless metadata was found or gapless mode is disabled.
+func (d *Decoder) GaplessInfo() *lameinfo.Info {
+	return d.lameInfo
+}
+
+// RawLength returns the total decoded bytes without gapless trimming.
+// Returns -1 if the source is not seekable.
+// If gapless mode is not active, this returns the same value as Length().
+func (d *Decoder) RawLength() int64 {
+	if d.rawLength != invalidLength {
+		return d.rawLength
+	}
+	return d.length
 }
 
 // Duration returns the total duration of the audio stream.
@@ -358,19 +440,35 @@ func (d *Decoder) durationToBytes(dur time.Duration) int64 {
 // The stream is always formatted as 16bit (little endian) 2 channels
 // even if the source is single channel MP3.
 // Thus, a sample always consists of 4 bytes.
+//
+// By default, gapless playback is enabled. Use NewDecoderWithOptions to
+// configure decoder behavior.
 func NewDecoder(r io.Reader) (*Decoder, error) {
+	return NewDecoderWithOptions(r, DefaultDecoderOptions())
+}
+
+// NewDecoderWithOptions decodes the given io.Reader with the specified options.
+//
+// The stream is always formatted as 16bit (little endian) 2 channels
+// even if the source is single channel MP3.
+// Thus, a sample always consists of 4 bytes.
+func NewDecoderWithOptions(r io.Reader, opts DecoderOptions) (*Decoder, error) {
 	s := &source{
 		reader: r,
 	}
 	d := &Decoder{
-		source: s,
-		length: invalidLength,
+		source:    s,
+		length:    invalidLength,
+		rawLength: invalidLength,
 	}
 
 	if err := s.skipTags(); err != nil {
 		return nil, err
 	}
-	// TODO: Is readFrame here really needed?
+
+	// Save position before first frame for LAME parsing
+	firstFramePos := s.pos
+
 	if err := d.readFrame(); err != nil {
 		return nil, err
 	}
@@ -384,5 +482,99 @@ func NewDecoder(r io.Reader) (*Decoder, error) {
 		return nil, err
 	}
 
+	// Try to parse gapless info and apply trimming
+	if opts.Gapless {
+		d.tryApplyGapless(firstFramePos)
+	}
+
 	return d, nil
+}
+
+// tryApplyGapless attempts to parse LAME/Xing metadata and configure gapless playback.
+// It requires a seekable source. If parsing fails, the decoder falls back to raw mode.
+func (d *Decoder) tryApplyGapless(firstFramePos int64) {
+	// Need seekable source
+	seeker, ok := d.source.reader.(io.Seeker)
+	if !ok {
+		return
+	}
+
+	// Save current position
+	curPos, err := seeker.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return
+	}
+
+	// Seek to first frame
+	if _, err := seeker.Seek(firstFramePos, io.SeekStart); err != nil {
+		return
+	}
+	d.source.pos = firstFramePos
+	d.source.buf = nil
+
+	// Parse LAME info
+	info, err := lameinfo.ParseFromReader(d.source)
+	if err != nil {
+		// No LAME info - restore and use raw mode
+		_, _ = seeker.Seek(curPos, io.SeekStart)
+		d.source.pos = curPos
+		d.source.buf = nil
+		return
+	}
+
+	d.lameInfo = info
+
+	// Calculate skip amounts
+	// Skip: Xing frame (bytesPerFrame) + TotalDelay() samples
+	xingFrameBytes := d.bytesPerFrame
+	delayBytes := int64(info.TotalDelay()) * 4
+	d.skipStartBytes = xingFrameBytes + delayBytes
+	d.skipEndBytes = int64(info.TotalPadding()) * 4
+
+	// Store raw length, calculate virtual length
+	d.rawLength = d.length
+	d.length = max(0, d.rawLength-d.skipStartBytes-d.skipEndBytes)
+
+	// Restore source position for future reads
+	_, _ = seeker.Seek(curPos, io.SeekStart)
+	d.source.pos = curPos
+	d.source.buf = nil
+
+	// Clear the Xing frame samples from buffer and skip initial samples
+	d.buf = nil
+	d.pos = 0
+	d.skipInitialSamples()
+}
+
+// skipInitialSamples reads and discards samples at the start for gapless playback.
+// Note: This only skips the delay portion. The Xing frame is already discarded
+// by setting d.buf = nil before calling this function.
+func (d *Decoder) skipInitialSamples() {
+	if d.lameInfo == nil {
+		return
+	}
+
+	// Only skip the delay bytes - the Xing frame was already discarded
+	delayBytes := int64(d.lameInfo.TotalDelay()) * 4
+	if delayBytes <= 0 {
+		return
+	}
+
+	remaining := delayBytes
+
+	for remaining > 0 {
+		if len(d.buf) == 0 {
+			if err := d.readFrame(); err != nil {
+				return
+			}
+		}
+
+		if int64(len(d.buf)) <= remaining {
+			remaining -= int64(len(d.buf))
+			d.buf = nil
+		} else {
+			d.buf = d.buf[remaining:]
+			remaining = 0
+		}
+	}
 }
