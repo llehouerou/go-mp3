@@ -118,6 +118,11 @@ func (f *Frame) SamplingFrequency() (int, error) {
 	return f.header.SamplingFrequencyValue()
 }
 
+// BytesPerFrame returns the number of decoded PCM bytes this frame yields.
+func (f *Frame) BytesPerFrame() int {
+	return f.header.BytesPerFrame()
+}
+
 func (f *Frame) Decode() []byte {
 	out := make([]byte, f.header.BytesPerFrame())
 	nch := f.header.NumberOfChannels()

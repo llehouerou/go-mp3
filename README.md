@@ -153,5 +153,5 @@ if err == nil {
 
 ## Known Limitations
 
-- **Gapless requires seekable source**: Gapless trimming only works with `io.Seeker` sources (like `*os.File`). Non-seekable streams are decoded without trimming.
-- **Not all files have LAME headers**: Files without LAME/Xing metadata are decoded normally without gapless adjustment.
+- **Not all files have LAME headers**: Files without LAME/Xing metadata are decoded normally without gapless adjustment. On such files `Length()` and `Duration()` count the frames on first use, which reads the whole file once; with a Xing/Info header they are free.
+- **Seeking requires an `io.Seeker`**: `Seek`, `SeekToSample`, `SeekToTime` and `Skip` return `ErrNotSeekable` on a plain `io.Reader`. `Length()` and `Duration()` still work there when the file carries a Xing/Info header, as does gapless trimming.
