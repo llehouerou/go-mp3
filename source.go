@@ -62,12 +62,16 @@ func (s *source) Seek(position int64, whence int) (int64, error) {
 	case io.SeekStart:
 	case io.SeekCurrent:
 		target = s.pos + position
-	default: // io.SeekEnd: only the underlying reader knows where the end is.
+	default: // io.SeekEnd: only the underlying reader knows where the end is,
+		// and the seek it performs lands us there, so there is nothing left to do.
 		n, err := seeker.Seek(position, whence)
 		if err != nil {
 			return 0, err
 		}
-		target = n
+		s.buf = nil
+		s.br.Reset(s.reader)
+		s.pos = n
+		return n, nil
 	}
 
 	// A short forward seek is what walking frame headers does: read four
@@ -197,19 +201,6 @@ func (s *source) ReadFull(buf []byte) (int, error) {
 			err = io.EOF
 		}
 	}
-	s.pos += int64(n)
-	return n + read, err
-}
-
-// Read implements io.Reader. It reads from the internal buffer first,
-// then from the underlying reader.
-func (s *source) Read(buf []byte) (int, error) {
-	read := s.takePushback(buf)
-	if read == len(buf) {
-		return read, nil
-	}
-
-	n, err := s.br.Read(buf[read:])
 	s.pos += int64(n)
 	return n + read, err
 }
