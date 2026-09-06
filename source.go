@@ -92,6 +92,23 @@ func (s *source) Seek(position int64, whence int) (int64, error) {
 	return n, nil
 }
 
+// Peek returns the next n bytes without consuming them, so metadata in the
+// first frame can be read on any source, seekable or not. Fewer bytes come back
+// near the end of the stream.
+func (s *source) Peek(n int) ([]byte, error) {
+	if len(s.buf) >= n {
+		return s.buf[:n], nil
+	}
+	rest, err := s.br.Peek(n - len(s.buf))
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if len(s.buf) == 0 {
+		return rest, nil
+	}
+	return append(append([]byte{}, s.buf...), rest...), nil
+}
+
 func (s *source) skipTags() error {
 	for {
 		buf := make([]byte, 3)

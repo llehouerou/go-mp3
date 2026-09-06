@@ -56,11 +56,28 @@ type Decoder struct {
 	pos           int64 // Virtual position (after trimming)
 	bytesPerFrame int64
 
+	// seekable reports whether the source supports seeking. It is independent
+	// of whether the length is known: a Xing header gives a length even on a
+	// stream that cannot seek.
+	seekable bool
+	// scanned reports whether frameStarts holds the whole file. The scan is
+	// only run when something actually needs it.
+	scanned bool
+	// firstFramePos is the offset of the first frame, after any leading tags.
+	firstFramePos int64
+	// fileSize is the size of a seekable source, or 0 when it is unknown.
+	fileSize int64
+
 	// Gapless playback
 	lameInfo       *lameinfo.Info
 	skipStartBytes int64 // Bytes to skip at start (Xing frame + delay)
 	skipEndBytes   int64 // Bytes to trim at end (padding)
 }
+
+// ErrNotSeekable is returned by the seeking methods when the source is a plain
+// io.Reader. Length and Duration can still be available in that case, when the
+// file carries a Xing/Info header.
+var ErrNotSeekable = errors.New("mp3: source is not seekable")
 
 func (d *Decoder) readFrame() error {
 	var err error
@@ -118,12 +135,22 @@ func (d *Decoder) Read(buf []byte) (int, error) {
 
 // Seek is io.Seeker's Seek.
 //
-// Seek returns an error when the underlying source is not io.Seeker.
+// Seek returns ErrNotSeekable when the underlying source is not io.Seeker. The
+// first seek on a file without a Xing header walks its frame headers to build
+// an index; later seeks reuse it.
 //
 // Note that seek uses a byte offset but samples are aligned to 4 bytes (2
 // channels, 2 bytes each). Be careful to seek to an offset that is divisible by
 // 4 if you want to read at full sample boundaries.
 func (d *Decoder) Seek(offset int64, whence int) (int64, error) {
+	if offset == 0 && whence == io.SeekCurrent {
+		// Handle the special case of asking for the current position specially.
+		return d.pos, nil
+	}
+
+	if err := d.ensureFrameIndex(); err != nil {
+		return 0, err
+	}
 	if offset == 0 && whence == io.SeekCurrent {
 		// Handle the special case of asking for the current position specially.
 		return d.pos, nil
@@ -165,6 +192,9 @@ func (d *Decoder) Seek(offset int64, whence int) (int64, error) {
 	}
 
 	f := rawPos / d.bytesPerFrame
+	// A Xing header can promise more frames than the file holds, so the index
+	// is the authority on what exists.
+	f = min(f, int64(len(d.frameStarts)-1))
 	// If the frame is not first, read the previous ahead of reading that
 	// because the previous frame can affect the targeted frame.
 	if f > 0 {
@@ -217,13 +247,32 @@ func (d *Decoder) SampleRate() int {
 	return d.sampleRate
 }
 
-func (d *Decoder) ensureFrameStartsAndLength() error {
-	if d.length != invalidLength {
+// ensureLength makes the total length known, scanning the file if that is the
+// only way to learn it.
+func (d *Decoder) ensureLength() error {
+	if d.rawLength != invalidLength {
 		return nil
 	}
+	return d.scan()
+}
 
-	if _, ok := d.source.reader.(io.Seeker); !ok {
+// ensureFrameIndex makes frameStarts cover the whole file. Playback never needs
+// it; only seeking does, so it is built on the first seek and kept.
+func (d *Decoder) ensureFrameIndex() error {
+	if d.scanned {
 		return nil
+	}
+	return d.scan()
+}
+
+// scan walks every frame header in the file, building the frame index and, when
+// it is not already known from a Xing header, the length.
+//
+// This is what opening a file used to do unconditionally. It reads the whole
+// file, so it now runs only when something asks for what it produces.
+func (d *Decoder) scan() error {
+	if !d.seekable {
+		return ErrNotSeekable
 	}
 
 	// Keep the current position.
@@ -273,7 +322,14 @@ func (d *Decoder) ensureFrameStartsAndLength() error {
 			return err
 		}
 	}
-	d.length = l
+	d.scanned = true
+	// A length derived from a Xing header wins: it is what the file claims
+	// about itself, it was already sanity-checked, and letting a later seek
+	// change Duration() under the caller would be worse than a small
+	// disagreement.
+	if d.rawLength == invalidLength {
+		d.setRawLength(l)
+	}
 
 	if _, err := d.source.Seek(pos, io.SeekStart); err != nil {
 		return err
@@ -283,11 +339,27 @@ func (d *Decoder) ensureFrameStartsAndLength() error {
 
 const invalidLength = -1
 
+// setRawLength records the raw decoded size and derives the length callers see
+// from it, which is the raw size minus anything gapless trimming removes.
+func (d *Decoder) setRawLength(raw int64) {
+	d.rawLength = raw
+	d.length = raw
+	if d.lameInfo != nil {
+		d.length = max(0, raw-d.skipStartBytes-d.skipEndBytes)
+	}
+}
+
 // Length returns the total size in bytes.
 //
-// Length returns -1 when the total size is not available
-// e.g. when the given source is not io.Seeker.
+// It is free when the file carries a Xing/Info header. Without one, the first
+// call walks the file's frame headers to count them.
+//
+// Length returns -1 when the total size cannot be determined, i.e. when the
+// source is neither seekable nor carrying a Xing/Info header.
 func (d *Decoder) Length() int64 {
+	if err := d.ensureLength(); err != nil {
+		return invalidLength
+	}
 	return d.length
 }
 
@@ -304,22 +376,23 @@ func (d *Decoder) GaplessInfo() *lameinfo.Info {
 }
 
 // RawLength returns the total decoded bytes without gapless trimming.
-// Returns -1 if the source is not seekable.
+// Returns -1 if the length cannot be determined.
 // If gapless mode is not active, this returns the same value as Length().
 func (d *Decoder) RawLength() int64 {
-	if d.rawLength != invalidLength {
-		return d.rawLength
+	if err := d.ensureLength(); err != nil {
+		return invalidLength
 	}
-	return d.length
+	return d.rawLength
 }
 
 // Duration returns the total duration of the audio stream.
-// Returns -1 if the duration cannot be determined (e.g., non-seekable source).
+// Returns -1 if the duration cannot be determined.
 func (d *Decoder) Duration() time.Duration {
-	if d.length == invalidLength {
+	length := d.Length()
+	if length == invalidLength {
 		return -1
 	}
-	return d.bytesToDuration(d.length)
+	return d.bytesToDuration(length)
 }
 
 // Position returns the current playback position as a time.Duration.
@@ -340,13 +413,14 @@ func (d *Decoder) Remaining() time.Duration {
 // Progress returns the playback progress as a value between 0.0 and 1.0.
 // Returns -1 if progress cannot be determined.
 func (d *Decoder) Progress() float64 {
-	if d.length == invalidLength {
+	length := d.Length()
+	if length == invalidLength {
 		return -1
 	}
-	if d.length == 0 {
+	if length == 0 {
 		return 0
 	}
-	return float64(d.pos) / float64(d.length)
+	return float64(d.pos) / float64(length)
 }
 
 // SamplePosition returns the current position in samples (per channel).
@@ -358,19 +432,19 @@ func (d *Decoder) SamplePosition() int64 {
 // SampleCount returns the total number of samples (per channel).
 // Returns -1 if the count cannot be determined.
 func (d *Decoder) SampleCount() int64 {
-	if d.length == invalidLength {
+	length := d.Length()
+	if length == invalidLength {
 		return -1
 	}
-	return d.length / 4
+	return length / 4
 }
 
 // SeekToSample seeks to the specified sample position.
 // Returns an error if seeking is not supported.
 // Negative positions are clamped to 0, positions beyond the end are clamped.
 func (d *Decoder) SeekToSample(sample int64) error {
-	// Check if seeking is supported
-	if d.length == invalidLength {
-		return errors.New("mp3: seek not supported on non-seekable source")
+	if !d.seekable {
+		return ErrNotSeekable
 	}
 
 	// Clamp to valid range
@@ -400,9 +474,8 @@ func (d *Decoder) Skip(delta time.Duration) error {
 // Returns an error if seeking is not supported.
 // Negative times are clamped to 0, times beyond duration are clamped to the end.
 func (d *Decoder) SeekToTime(t time.Duration) error {
-	// Check if seeking is supported
-	if d.length == invalidLength {
-		return errors.New("mp3: seek not supported on non-seekable source")
+	if !d.seekable {
+		return ErrNotSeekable
 	}
 
 	// Clamp to valid range
@@ -459,13 +532,25 @@ func NewDecoderWithOptions(r io.Reader, opts DecoderOptions) (*Decoder, error) {
 		length:    invalidLength,
 		rawLength: invalidLength,
 	}
+	_, d.seekable = r.(io.Seeker)
 
+	// Ask how big the file is before anything is buffered, so the answer costs
+	// two seeks and no reads. The credibility check below needs it.
+	if d.seekable {
+		d.fileSize, _ = d.sourceSize()
+	}
 	if err := s.skipTags(); err != nil {
 		return nil, err
 	}
+	d.firstFramePos = s.pos
 
-	// Save position before first frame for LAME parsing
-	firstFramePos := s.pos
+	// Read the VBR header out of the first frame before decoding it. Peeking
+	// costs nothing on any source, and the frame count it carries is what
+	// makes counting frames by hand unnecessary.
+	var info *lameinfo.Info
+	if head, err := s.Peek(xingHeaderPeek); err == nil {
+		info, _ = lameinfo.Parse(head)
+	}
 
 	if err := d.readFrame(); err != nil {
 		return nil, err
@@ -475,63 +560,99 @@ func NewDecoderWithOptions(r io.Reader, opts DecoderOptions) (*Decoder, error) {
 		return nil, err
 	}
 	d.sampleRate = freq
+	d.bytesPerFrame = int64(d.frame.BytesPerFrame())
 
-	if err := d.ensureFrameStartsAndLength(); err != nil {
-		return nil, err
+	if opts.Gapless && info != nil {
+		d.applyGapless(info)
 	}
-
-	// Try to parse gapless info and apply trimming
-	if opts.Gapless {
-		d.tryApplyGapless(firstFramePos)
+	if err := d.applyXingLength(info); err != nil {
+		return nil, err
 	}
 
 	return d, nil
 }
 
-// tryApplyGapless attempts to parse LAME/Xing metadata and configure gapless playback.
-// It requires a seekable source. If parsing fails, the decoder falls back to raw mode.
-func (d *Decoder) tryApplyGapless(firstFramePos int64) {
-	// Need seekable source
-	if _, ok := d.source.reader.(io.Seeker); !ok {
-		return
+// xingHeaderPeek is the most a Xing header plus a LAME tag can occupy: the
+// frame header, the largest side info block, the tag itself with every optional
+// field, and the LAME extension.
+const xingHeaderPeek = 4 + 32 + 4 + 4 + 4 + 4 + 100 + 4 + 36
+
+// applyXingLength derives the total length from the frame count in the VBR
+// header, falling back to counting frames when there is no header or the count
+// it gives is not credible.
+func (d *Decoder) applyXingLength(info *lameinfo.Info) error {
+	if info != nil && info.HasFrameCount() && d.frameCountIsCredible(info) {
+		// LAME counts the audio frames, excluding the header frame it wrote.
+		d.setRawLength((int64(info.FrameCount) + 1) * d.bytesPerFrame)
+		return nil
 	}
 
-	// Save current position
-	curPos, err := d.source.Seek(0, io.SeekCurrent)
+	if info != nil && d.seekable {
+		// The file lied about itself, so counting is the only way to know. Do
+		// it now rather than lazily: gapless trimming needs a length to trim
+		// against, and the caller was told this file has one.
+		return d.scan()
+	}
+
+	// No header: leave the length unknown until something asks for it.
+	return nil
+}
+
+// frameCountIsCredible rejects a frame count the file is too small to hold,
+// which is what a download cut short looks like. It cannot validate a count
+// that is merely wrong; the file would have to be counted for that.
+func (d *Decoder) frameCountIsCredible(info *lameinfo.Info) bool {
+	if !d.seekable {
+		return true // No way to check, and no scan available either.
+	}
+	if d.fileSize == 0 {
+		return true
+	}
+	audioBytes := d.fileSize - d.firstFramePos
+
+	if info.HasByteCount() && info.ByteCount > 0 && audioBytes < int64(info.ByteCount) {
+		return false
+	}
+
+	// Every frame occupies at least the smallest legal frame at this sample
+	// rate, so the file cannot be shorter than that times the frame count.
+	samplesPerFrame := d.bytesPerFrame / 4
+	minBitrate := int64(32000) // MPEG1 Layer III
+	if samplesPerFrame < 1152 {
+		minBitrate = 8000 // MPEG2/2.5 Layer III
+	}
+	minFrameBytes := samplesPerFrame / 8 * minBitrate / int64(d.sampleRate)
+	return audioBytes >= (int64(info.FrameCount)+1)*minFrameBytes
+}
+
+// sourceSize reports the size of the underlying file, restoring the read
+// position afterwards.
+func (d *Decoder) sourceSize() (int64, error) {
+	cur, err := d.source.Seek(0, io.SeekCurrent)
 	if err != nil {
-		return
+		return 0, err
 	}
-
-	// Seek to first frame
-	if _, err := d.source.Seek(firstFramePos, io.SeekStart); err != nil {
-		return
-	}
-
-	// Parse LAME info
-	info, err := lameinfo.ParseFromReader(d.source)
+	size, err := d.source.Seek(0, io.SeekEnd)
 	if err != nil {
-		// No LAME info - restore and use raw mode
-		_, _ = d.source.Seek(curPos, io.SeekStart)
-		return
+		return 0, err
 	}
+	if _, err := d.source.Seek(cur, io.SeekStart); err != nil {
+		return 0, err
+	}
+	return size, nil
+}
 
+// applyGapless configures trimming from LAME/Xing metadata already parsed out
+// of the first frame. It needs no seeking, so it works on streams too.
+func (d *Decoder) applyGapless(info *lameinfo.Info) {
 	d.lameInfo = info
 
-	// Calculate skip amounts
-	// Skip: Xing frame (bytesPerFrame) + TotalDelay() samples
-	xingFrameBytes := d.bytesPerFrame
-	delayBytes := int64(info.TotalDelay()) * 4
-	d.skipStartBytes = xingFrameBytes + delayBytes
+	// Skip: the Xing frame itself (it carries no audio) plus TotalDelay()
+	// samples of encoder delay.
+	d.skipStartBytes = d.bytesPerFrame + int64(info.TotalDelay())*4
 	d.skipEndBytes = int64(info.TotalPadding()) * 4
 
-	// Store raw length, calculate virtual length
-	d.rawLength = d.length
-	d.length = max(0, d.rawLength-d.skipStartBytes-d.skipEndBytes)
-
-	// Restore source position for future reads
-	_, _ = d.source.Seek(curPos, io.SeekStart)
-
-	// Clear the Xing frame samples from buffer and skip initial samples
+	// Discard the Xing frame's decoded samples, then the encoder delay.
 	d.buf = nil
 	d.pos = 0
 	d.skipInitialSamples()

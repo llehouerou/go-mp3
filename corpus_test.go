@@ -2,6 +2,7 @@ package mp3_test
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"testing"
 
@@ -259,8 +260,9 @@ func TestLyingXingFrameCount(t *testing.T) {
 	}
 }
 
-// TestNonSeekableSource pins today's behaviour: no seeking means no length.
-// Deriving length from a Xing header will change this, deliberately.
+// TestNonSeekableSource covers a stream: a Xing header needs no seeking, so the
+// length is known even though seeking is not possible. The two used to be the
+// same condition.
 func TestNonSeekableSource(t *testing.T) {
 	data := testaudio.Build(testaudio.Options{Frames: 20, XingMode: testaudio.Xing})
 
@@ -268,18 +270,46 @@ func TestNonSeekableSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDecoderWithOptions: %v", err)
 	}
-	if got := d.Length(); got != -1 {
-		t.Errorf("Length() = %d on a non-seekable source, want -1", got)
+	if want := int64(21) * 4608; d.Length() != want {
+		t.Errorf("Length() = %d on a stream with a Xing header, want %d", d.Length(), want)
 	}
-	if err := d.SeekToSample(0); err == nil {
-		t.Error("SeekToSample on a non-seekable source: want an error")
+	if err := d.SeekToSample(0); !errors.Is(err, mp3.ErrNotSeekable) {
+		t.Errorf("SeekToSample on a stream: err = %v, want ErrNotSeekable", err)
+	}
+	if _, err := d.Seek(0, io.SeekStart); !errors.Is(err, mp3.ErrNotSeekable) {
+		t.Errorf("Seek on a stream: err = %v, want ErrNotSeekable", err)
 	}
 
 	decoded, err := io.ReadAll(d)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	if want := 21 * 4608; len(decoded) != want {
+	if int64(len(decoded)) != d.Length() {
+		t.Errorf("decoded %d bytes, Length() = %d", len(decoded), d.Length())
+	}
+}
+
+// TestNonSeekableWithoutXing pins the other half: no header and no seeking
+// means the length genuinely cannot be known.
+func TestNonSeekableWithoutXing(t *testing.T) {
+	data := testaudio.Build(testaudio.Options{Frames: 20})
+
+	d, err := mp3.NewDecoderWithOptions(testaudio.NewUnseekableCounter(data), mp3.DecoderOptions{})
+	if err != nil {
+		t.Fatalf("NewDecoderWithOptions: %v", err)
+	}
+	if got := d.Length(); got != -1 {
+		t.Errorf("Length() = %d on a headerless stream, want -1", got)
+	}
+	if got := d.Duration(); got != -1 {
+		t.Errorf("Duration() = %v on a headerless stream, want -1", got)
+	}
+
+	decoded, err := io.ReadAll(d)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if want := 20 * 4608; len(decoded) != want {
 		t.Errorf("decoded %d bytes, want %d", len(decoded), want)
 	}
 }
