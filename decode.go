@@ -453,9 +453,7 @@ func NewDecoder(r io.Reader) (*Decoder, error) {
 // even if the source is single channel MP3.
 // Thus, a sample always consists of 4 bytes.
 func NewDecoderWithOptions(r io.Reader, opts DecoderOptions) (*Decoder, error) {
-	s := &source{
-		reader: r,
-	}
+	s := newSource(r)
 	d := &Decoder{
 		source:    s,
 		length:    invalidLength,
@@ -494,31 +492,26 @@ func NewDecoderWithOptions(r io.Reader, opts DecoderOptions) (*Decoder, error) {
 // It requires a seekable source. If parsing fails, the decoder falls back to raw mode.
 func (d *Decoder) tryApplyGapless(firstFramePos int64) {
 	// Need seekable source
-	seeker, ok := d.source.reader.(io.Seeker)
-	if !ok {
+	if _, ok := d.source.reader.(io.Seeker); !ok {
 		return
 	}
 
 	// Save current position
-	curPos, err := seeker.Seek(0, io.SeekCurrent)
+	curPos, err := d.source.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return
 	}
 
 	// Seek to first frame
-	if _, err := seeker.Seek(firstFramePos, io.SeekStart); err != nil {
+	if _, err := d.source.Seek(firstFramePos, io.SeekStart); err != nil {
 		return
 	}
-	d.source.pos = firstFramePos
-	d.source.buf = nil
 
 	// Parse LAME info
 	info, err := lameinfo.ParseFromReader(d.source)
 	if err != nil {
 		// No LAME info - restore and use raw mode
-		_, _ = seeker.Seek(curPos, io.SeekStart)
-		d.source.pos = curPos
-		d.source.buf = nil
+		_, _ = d.source.Seek(curPos, io.SeekStart)
 		return
 	}
 
@@ -536,9 +529,7 @@ func (d *Decoder) tryApplyGapless(firstFramePos int64) {
 	d.length = max(0, d.rawLength-d.skipStartBytes-d.skipEndBytes)
 
 	// Restore source position for future reads
-	_, _ = seeker.Seek(curPos, io.SeekStart)
-	d.source.pos = curPos
-	d.source.buf = nil
+	_, _ = d.source.Seek(curPos, io.SeekStart)
 
 	// Clear the Xing frame samples from buffer and skip initial samples
 	d.buf = nil
