@@ -505,17 +505,6 @@ func (f *Frame) frequencyInversion(gr, ch int) {
 	}
 }
 
-var synthNWin = [64][32]float32{}
-
-func init() {
-	for i := range 64 {
-		for j := range 32 {
-			synthNWin[i][j] =
-				float32(math.Cos(float64((16+i)*(2*j+1)) * (math.Pi / 64.0)))
-		}
-	}
-}
-
 var synthDtbl = [512]float32{
 	0.000000000, -0.000015259, -0.000015259, -0.000015259,
 	-0.000015259, -0.000015259, -0.000015259, -0.000030518,
@@ -648,24 +637,19 @@ var synthDtbl = [512]float32{
 }
 
 func (f *Frame) subbandSynthesis(gr, ch int, out []byte) {
+	// Scratch, kept local: Frame is heap-allocated per frame, so hanging these
+	// off it would cost an allocation and a copy per frame instead of saving one.
 	uVec := make([]float32, 512)
-	sVec := make([]float32, 32)
+	var sVec [32]float32
 
 	nch := f.header.NumberOfChannels()
-	// Setup the n_win windowing vector and the vVec intermediate vector
 	for ss := range 18 { // Loop through 18 samples in 32 subbands
 		copy(f.vVec[ch][64:1024], f.vVec[ch][0:1024-64])
 		d := f.mainData.Is[gr][ch]
 		for i := range 32 { // Copy next 32 time samples to a temp vector
 			sVec[i] = d[i*18+ss] //nolint:gosec // i is 0-31 and ss is 0-17, so max index is 31*18+17=575 < 576
 		}
-		for i := range 64 { // Matrix multiply input with n_win[][] matrix
-			sum := float32(0)
-			for j := range 32 {
-				sum += synthNWin[i][j] * sVec[j]
-			}
-			f.vVec[ch][i] = sum
-		}
+		synthesisMatrix(&sVec, &f.vVec[ch]) // Fills vVec[0:64], the ISO n_win matrixing
 		v := f.vVec[ch]
 		for i := 0; i < 512; i += 64 { // Build the U vector
 			copy(uVec[i:i+32], v[(i<<1):(i<<1)+32])
