@@ -19,6 +19,9 @@
       in
       {
         devShells.default = pkgs.mkShell {
+          # cgo in the example's audio backend (oto) discovers ALSA via pkg-config.
+          nativeBuildInputs = with pkgs; [ pkg-config ];
+
           buildInputs = with pkgs; [
             # Go toolchain
             go
@@ -36,7 +39,11 @@
 
             # Reference decoder for compliance testing
             mpg123
-          ];
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+              # Audio output for ./example
+              pkgs.alsa-lib
+            ];
 
           shellHook = ''
             export GOPATH="$HOME/go"
