@@ -42,6 +42,13 @@ const (
 
 	// For limited compliance, max diff is typically 2^-10 * 32768 = 32
 	limitedComplianceMaxDiff = 32
+
+	// Pinned accuracy budget (docs/adr/0002): the ISO limited ceiling is ~6x
+	// looser than this decoder's actual deviation, which would let a broken
+	// arithmetic change pass unnoticed. Measured today: RMS 0.72-0.75,
+	// MaxDiff 1-2. These pins sit just above that.
+	pinnedRMS     = 1.0
+	pinnedMaxDiff = 2
 )
 
 // ComplianceResult holds the results of comparing decoder output to reference
@@ -316,6 +323,16 @@ func TestComplianceAgainstMpg123(t *testing.T) {
 			// We aim for at least limited compliance
 			if !result.LimitedCompliance {
 				t.Errorf("decoder does not meet limited compliance requirements")
+			}
+
+			// The accuracy budget: deviation from the reference must stay where it
+			// is. Reassociating float arithmetic (a fast DCT) moves the last bits;
+			// anything that moves more than that is a bug, not rounding.
+			if result.RMS >= pinnedRMS {
+				t.Errorf("RMS %.6f exceeds the pinned accuracy budget of %.3f", result.RMS, pinnedRMS)
+			}
+			if result.MaxDiff > pinnedMaxDiff {
+				t.Errorf("MaxDiff %d exceeds the pinned accuracy budget of %d", result.MaxDiff, pinnedMaxDiff)
 			}
 
 			if result.FullCompliance {

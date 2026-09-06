@@ -51,3 +51,21 @@ _Avoid_: random access, indexable
 Discarding the encoder delay at the start and the padding at the end, using
 LAME/Xing metadata, so consecutive tracks join without a gap.
 _Avoid_: silence stripping, delay compensation
+
+**Reference decoder**:
+An external decoder whose output this one is measured against. mpg123 in
+practice; it defines what "correct" PCM means here, since no bit-exact
+specification output is on hand.
+_Avoid_: golden output, ground truth
+
+**Compliance level**:
+How close output sits to the reference, in ISO/IEC 11172-4 terms: _full_
+compliance and _limited_ compliance are fixed RMS and maximum-difference
+thresholds. This decoder meets limited compliance.
+_Avoid_: accuracy level, quality level
+
+**Accuracy budget**:
+The deviation from the reference decoder this project allows itself, pinned
+near what it currently measures rather than at the looser ISO limit. It is the
+output contract: PCM is bounded, not identical bit-for-bit across versions.
+_Avoid_: tolerance, error margin

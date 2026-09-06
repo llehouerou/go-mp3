@@ -39,6 +39,13 @@ func main() {
 }
 ```
 
+## Output Accuracy
+
+Decoded PCM meets ISO/IEC 11172-4 **limited compliance** against a reference
+decoder (mpg123). Output is **not** guaranteed to be identical bit-for-bit
+across versions: arithmetic changes may move the last bits of a sample. Do not
+golden-hash decoder output in your own tests. See
+[docs/adr/0002](docs/adr/0002-accuracy-budget-over-bit-exact-output.md).
 ## Thread Safety
 
 The `Decoder` is **not safe for concurrent use**. If you need to access the decoder from multiple goroutines (e.g., one goroutine reading audio for playback while another handles seeking from user input), you must synchronize access yourself.
