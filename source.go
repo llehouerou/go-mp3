@@ -15,26 +15,79 @@
 package mp3
 
 import (
+	"bufio"
 	"errors"
 	"io"
 )
 
+// sourceBufferSize is the block size reads are batched into. MP3 frames are a
+// few hundred bytes, so unbuffered decoding costs one syscall per frame, which
+// on a network filesystem is one round trip per frame.
+//
+// ponytail: one fixed size for every source; make it an option only if a caller
+// turns up that genuinely needs a different one.
+const sourceBufferSize = 64 * 1024
+
 type source struct {
+	// reader is the original reader, kept for its io.Seeker identity.
 	reader io.Reader
-	buf    []byte
-	pos    int64
+	// br batches reads from reader.
+	br *bufio.Reader
+	// buf holds bytes pushed back by Unread, consumed before br.
+	buf []byte
+	pos int64
 }
 
+func newSource(r io.Reader) *source {
+	return &source{
+		reader: r,
+		br:     bufio.NewReaderSize(r, sourceBufferSize),
+	}
+}
+
+// Seek moves the logical read position.
+//
+// Buffering makes the underlying reader's position meaningless to callers: it
+// sits wherever the last block fetch left it, ahead of the byte the decoder
+// will read next. Every seek is therefore resolved to an absolute target first,
+// and relative seeks are never passed through.
 func (s *source) Seek(position int64, whence int) (int64, error) {
 	seeker, ok := s.reader.(io.Seeker)
 	if !ok {
 		return 0, errors.New("mp3: source must be io.Seeker")
 	}
+
+	target := position
+	switch whence {
+	case io.SeekStart:
+	case io.SeekCurrent:
+		target = s.pos + position
+	default: // io.SeekEnd: only the underlying reader knows where the end is.
+		n, err := seeker.Seek(position, whence)
+		if err != nil {
+			return 0, err
+		}
+		target = n
+	}
+
+	// A short forward seek is what walking frame headers does: read four
+	// bytes, skip the body. Serving it from the buffer is the whole point of
+	// buffering; seeking the underlying reader would throw the block away and
+	// refetch it for the next header.
+	if delta := target - s.pos; len(s.buf) == 0 && delta >= 0 && delta <= int64(s.br.Buffered()) {
+		if _, err := s.br.Discard(int(delta)); err != nil {
+			return 0, err
+		}
+		s.pos = target
+		return s.pos, nil
+	}
+
 	s.buf = nil
-	n, err := seeker.Seek(position, whence)
+	n, err := seeker.Seek(target, io.SeekStart)
 	if err != nil {
 		return 0, err
 	}
+	s.br.Reset(s.reader)
 	s.pos = n
 	return n, nil
 }
@@ -91,26 +144,36 @@ func (s *source) rewind() error {
 	return nil
 }
 
+// Unread pushes bytes back so the next read returns them again, rewinding the
+// logical position by the same amount.
 func (s *source) Unread(buf []byte) {
 	s.buf = append(buf, s.buf...)
 	s.pos -= int64(len(buf))
 }
 
+// takePushback consumes up to len(buf) pushed-back bytes, advancing the logical
+// position by what it hands over.
+func (s *source) takePushback(buf []byte) int {
+	if len(s.buf) == 0 {
+		return 0
+	}
+	n := copy(buf, s.buf)
+	if len(s.buf) > n {
+		s.buf = s.buf[n:]
+	} else {
+		s.buf = nil
+	}
+	s.pos += int64(n)
+	return n
+}
+
 func (s *source) ReadFull(buf []byte) (int, error) {
-	read := 0
-	if s.buf != nil {
-		read = copy(buf, s.buf)
-		if len(s.buf) > read {
-			s.buf = s.buf[read:]
-		} else {
-			s.buf = nil
-		}
-		if len(buf) == read {
-			return read, nil
-		}
+	read := s.takePushback(buf)
+	if read == len(buf) {
+		return read, nil
 	}
 
-	n, err := io.ReadFull(s.reader, buf[read:])
+	n, err := io.ReadFull(s.br, buf[read:])
 	if err != nil {
 		// Allow if all data can't be read. This is common.
 		if err == io.ErrUnexpectedEOF {
@@ -124,20 +187,12 @@ func (s *source) ReadFull(buf []byte) (int, error) {
 // Read implements io.Reader. It reads from the internal buffer first,
 // then from the underlying reader.
 func (s *source) Read(buf []byte) (int, error) {
-	read := 0
-	if s.buf != nil {
-		read = copy(buf, s.buf)
-		if len(s.buf) > read {
-			s.buf = s.buf[read:]
-		} else {
-			s.buf = nil
-		}
-		if len(buf) == read {
-			return read, nil
-		}
+	read := s.takePushback(buf)
+	if read == len(buf) {
+		return read, nil
 	}
 
-	n, err := s.reader.Read(buf[read:])
+	n, err := s.br.Read(buf[read:])
 	s.pos += int64(n)
 	return n + read, err
 }
