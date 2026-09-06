@@ -215,12 +215,12 @@ func TestCorpusSeekYieldsSameBytes(t *testing.T) {
 	}
 }
 
-// TestTruncatedFile covers a download cut short mid-frame.
+// TestTruncatedFile covers a download cut short mid-frame. Its Xing header is
+// no longer credible, so the length is counted rather than believed.
 //
-// It documents a pre-existing off-by-one: the up-front scan counts the last
-// frame from its header alone, while decoding stops before that frame because
-// its body is incomplete. Length() therefore over-reports by exactly one frame
-// on a truncated file. Any replacement must not make this worse.
+// It also documents a long-standing off-by-one: the scan counts the last frame
+// from its header alone, while decoding stops before that frame because its
+// body is incomplete, so Length() over-reports by exactly one frame.
 func TestTruncatedFile(t *testing.T) {
 	full := testaudio.Options{Frames: 20, XingMode: testaudio.Xing}
 	frameSize := testaudio.FrameSize(full)
@@ -244,7 +244,7 @@ func TestTruncatedFile(t *testing.T) {
 	}
 }
 
-// TestLyingXingFrameCount is the fixture the future floor check has to catch:
+// TestLyingXingFrameCount is the fixture the floor check has to catch:
 // the header claims far more frames than the file holds.
 func TestLyingXingFrameCount(t *testing.T) {
 	opts := testaudio.Options{Frames: 20, XingMode: testaudio.Xing, XingFrameCount: 20000}

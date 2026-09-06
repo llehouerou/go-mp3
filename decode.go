@@ -191,10 +191,12 @@ func (d *Decoder) Seek(offset int64, whence int) (int64, error) {
 		rawPos = npos + d.skipStartBytes
 	}
 
-	f := rawPos / d.bytesPerFrame
+	if len(d.frameStarts) == 0 {
+		return 0, errors.New("mp3: no frames to seek to")
+	}
 	// A Xing header can promise more frames than the file holds, so the index
 	// is the authority on what exists.
-	f = min(f, int64(len(d.frameStarts)-1))
+	f := min(rawPos/d.bytesPerFrame, int64(len(d.frameStarts)-1))
 	// If the frame is not first, read the previous ahead of reading that
 	// because the previous frame can affect the targeted frame.
 	if f > 0 {
@@ -308,7 +310,6 @@ func (d *Decoder) scan() error {
 			return err
 		}
 		d.frameStarts = append(d.frameStarts, pos)
-		d.bytesPerFrame = int64(h.BytesPerFrame())
 		l += d.bytesPerFrame
 
 		framesize, err := h.FrameSize()
@@ -534,10 +535,16 @@ func NewDecoderWithOptions(r io.Reader, opts DecoderOptions) (*Decoder, error) {
 	}
 	_, d.seekable = r.(io.Seeker)
 
-	// Ask how big the file is before anything is buffered, so the answer costs
-	// two seeks and no reads. The credibility check below needs it.
+	// Ask how big the file is while nothing is buffered yet, so the answer
+	// costs two seeks and no reads. The credibility check below needs it, and
+	// the decoder already assumes the stream starts here.
 	if d.seekable {
-		d.fileSize, _ = d.sourceSize()
+		if size, err := s.Seek(0, io.SeekEnd); err == nil {
+			d.fileSize = size
+		}
+		if _, err := s.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
 	}
 	if err := s.skipTags(); err != nil {
 		return nil, err
@@ -623,23 +630,6 @@ func (d *Decoder) frameCountIsCredible(info *lameinfo.Info) bool {
 	}
 	minFrameBytes := samplesPerFrame / 8 * minBitrate / int64(d.sampleRate)
 	return audioBytes >= (int64(info.FrameCount)+1)*minFrameBytes
-}
-
-// sourceSize reports the size of the underlying file, restoring the read
-// position afterwards.
-func (d *Decoder) sourceSize() (int64, error) {
-	cur, err := d.source.Seek(0, io.SeekCurrent)
-	if err != nil {
-		return 0, err
-	}
-	size, err := d.source.Seek(0, io.SeekEnd)
-	if err != nil {
-		return 0, err
-	}
-	if _, err := d.source.Seek(cur, io.SeekStart); err != nil {
-		return 0, err
-	}
-	return size, nil
 }
 
 // applyGapless configures trimming from LAME/Xing metadata already parsed out

@@ -46,9 +46,6 @@ type Options struct {
 	// XingFrameCount overrides the frame count written in the Xing header.
 	// Zero writes the truthful count (Frames).
 	XingFrameCount uint32
-	// XingByteCount overrides the byte count written in the Xing header.
-	// Zero writes the truthful total file size.
-	XingByteCount uint32
 	// OmitByteCount clears the byte count flag, as many encoders do.
 	OmitByteCount bool
 	// LAME appends a LAME tag carrying EncoderDelay and EncoderPadding.
@@ -69,15 +66,7 @@ type Options struct {
 
 // Build synthesises the described file.
 func Build(o Options) []byte {
-	version := mpegVersion(o.Version)
-	bitrates := o.BitratesKbps
-	if len(bitrates) == 0 {
-		if version == consts.Version1 {
-			bitrates = []int{128}
-		} else {
-			bitrates = []int{64}
-		}
-	}
+	version, bitrates := o.resolve()
 
 	var out []byte
 	if o.ID3v2Size > 0 {
@@ -96,10 +85,7 @@ func Build(o Options) []byte {
 	}
 
 	if o.XingMode != NoXing {
-		byteCount := o.XingByteCount
-		if byteCount == 0 {
-			byteCount = uint32(len(out) - audioStart) //nolint:gosec // synthesised files are kilobytes
-		}
+		byteCount := uint32(len(out) - audioStart) //nolint:gosec // synthesised files are kilobytes
 		copy(out[audioStart:], o.xingFrame(version, bitrates[0], byteCount))
 	}
 
@@ -119,18 +105,23 @@ func Build(o Options) []byte {
 	return out
 }
 
+// resolve fills in the defaults: MPEG1, and a bitrate typical of the version.
+func (o Options) resolve() (version consts.Version, bitratesKbps []int) {
+	version = mpegVersion(o.Version)
+	if len(o.BitratesKbps) > 0 {
+		return version, o.BitratesKbps
+	}
+	if version == consts.Version1 {
+		return version, []int{128}
+	}
+	return version, []int{64}
+}
+
 // FrameSize returns the encoded size of one frame of the described file, which
 // is constant only for CBR files.
 func FrameSize(o Options) int {
-	version := mpegVersion(o.Version)
-	bitrate := 128
-	if version != consts.Version1 {
-		bitrate = 64
-	}
-	if len(o.BitratesKbps) > 0 {
-		bitrate = o.BitratesKbps[0]
-	}
-	size, err := header(version, o.Mono, o.SampleRateIndex, bitrate, false).FrameSize()
+	version, bitrates := o.resolve()
+	size, err := header(version, o.Mono, o.SampleRateIndex, bitrates[0], false).FrameSize()
 	if err != nil {
 		panic(err)
 	}

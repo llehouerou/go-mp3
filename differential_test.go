@@ -37,15 +37,15 @@ func TestXingLengthMatchesScan(t *testing.T) {
 		name string
 		opts testaudio.Options
 	}{
-		{"cbr, info header", testaudio.Options{Frames: 50, XingMode: Info}},
-		{"vbr, xing header", testaudio.Options{Frames: 50, BitratesKbps: []int{128, 192, 96, 320}, XingMode: Xing}},
-		{"mono", testaudio.Options{Frames: 50, Mono: true, XingMode: Xing}},
-		{"48 kHz", testaudio.Options{Frames: 50, SampleRateIndex: 1, XingMode: Xing}},
-		{"mpeg2", testaudio.Options{Version: 2, Frames: 50, XingMode: Xing}},
-		{"id3v2 prefix", testaudio.Options{Frames: 50, ID3v2Size: 2048, XingMode: Xing}},
-		{"id3v1 suffix", testaudio.Options{Frames: 50, ID3v1: true, XingMode: Xing}},
-		{"no byte count", testaudio.Options{Frames: 50, XingMode: Xing, OmitByteCount: true}},
-		{"lame gapless", testaudio.Options{Frames: 50, XingMode: Xing, LAME: true, EncoderDelay: 576, EncoderPadding: 1152}},
+		{"cbr, info header", testaudio.Options{Frames: 50, XingMode: testaudio.Info}},
+		{"vbr, xing header", testaudio.Options{Frames: 50, BitratesKbps: []int{128, 192, 96, 320}, XingMode: testaudio.Xing}},
+		{"mono", testaudio.Options{Frames: 50, Mono: true, XingMode: testaudio.Xing}},
+		{"48 kHz", testaudio.Options{Frames: 50, SampleRateIndex: 1, XingMode: testaudio.Xing}},
+		{"mpeg2", testaudio.Options{Version: 2, Frames: 50, XingMode: testaudio.Xing}},
+		{"id3v2 prefix", testaudio.Options{Frames: 50, ID3v2Size: 2048, XingMode: testaudio.Xing}},
+		{"id3v1 suffix", testaudio.Options{Frames: 50, ID3v1: true, XingMode: testaudio.Xing}},
+		{"no byte count", testaudio.Options{Frames: 50, XingMode: testaudio.Xing, OmitByteCount: true}},
+		{"lame gapless", testaudio.Options{Frames: 50, XingMode: testaudio.Xing, LAME: true, EncoderDelay: 576, EncoderPadding: 1152}},
 	}
 
 	for _, tc := range cases {
@@ -104,7 +104,7 @@ func TestXingLengthMatchesScanOnRealFiles(t *testing.T) {
 // TestTruncatedXingFallsBackToScan covers the check that keeps a header from
 // promising audio the file does not contain.
 func TestTruncatedXingFallsBackToScan(t *testing.T) {
-	opts := testaudio.Options{Frames: 200, XingMode: Xing}
+	opts := testaudio.Options{Frames: 200, XingMode: testaudio.Xing}
 	full := testaudio.Build(opts)
 	truncated := full[:len(full)/2]
 
@@ -124,9 +124,3 @@ func TestTruncatedXingFallsBackToScan(t *testing.T) {
 		t.Errorf("raw length = %d, want well below the claimed %d", d.rawLength, untruncated)
 	}
 }
-
-// Aliases so the table above reads in the vocabulary of the file format.
-const (
-	Xing = testaudio.Xing
-	Info = testaudio.Info
-)
