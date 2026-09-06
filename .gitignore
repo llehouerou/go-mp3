@@ -7,4 +7,5 @@ benchmarks/
 
 docs/*
 !docs/agents/
+!docs/adr/
 *.test
