@@ -28,14 +28,31 @@ import (
 	"github.com/llehouerou/go-mp3/internal/sideinfo"
 )
 
+// pow2QuarterMin is the smallest requantization exponent numerator k, where the
+// gain factor is 2^(k/4). k = -m*(scalefac+preflag*pretab) + globalGain - 210 -
+// 8*subblockGain, with m = 2 or 4. Every field is bit-width bounded by the
+// parser: scalefac <= 15 (4 bits, MPEG1 and LSF alike), pretab <= 3,
+// globalGain <= 255 (8 bits), subblockGain <= 7 (3 bits). So k ranges from
+// -4*15 + 0 - 210 - 56 = -326 up to 0 + 255 - 210 = 45. An index outside that
+// means the parser produced an out-of-spec field, and the panic is the right
+// noise for it.
+const (
+	pow2QuarterMin = -326
+	pow2QuarterLen = 45 - pow2QuarterMin + 1
+)
+
 var (
-	powtab34 = make([]float64, 8207)
-	pretab   = []float64{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 3, 2, 0}
+	powtab34    = make([]float64, 8207)
+	pretab      = []int{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 3, 2, 0}
+	pow2Quarter [pow2QuarterLen]float64
 )
 
 func init() {
 	for i := range powtab34 {
 		powtab34[i] = math.Pow(float64(i), 4.0/3.0)
+	}
+	for i := range pow2Quarter {
+		pow2Quarter[i] = math.Pow(2.0, float64(i+pow2QuarterMin)/4.0)
 	}
 }
 
@@ -143,14 +160,13 @@ func (f *Frame) Decode() []byte {
 }
 
 func (f *Frame) requantizeProcessLong(gr, ch, isPos, sfb int) {
-	sfMult := 0.5
+	m := 2
 	if f.sideInfo.ScalefacScale[gr][ch] != 0 {
-		sfMult = 1.0
+		m = 4
 	}
-	pfXPt := float64(f.sideInfo.Preflag[gr][ch]) * pretab[sfb]
-	idx := -(sfMult * (float64(f.mainData.ScalefacL[gr][ch][sfb]) + pfXPt)) +
-		0.25*(float64(f.sideInfo.GlobalGain[gr][ch])-210)
-	tmp1 := math.Pow(2.0, idx)
+	k := -m*(f.mainData.ScalefacL[gr][ch][sfb]+f.sideInfo.Preflag[gr][ch]*pretab[sfb]) +
+		f.sideInfo.GlobalGain[gr][ch] - 210
+	tmp1 := pow2Quarter[k-pow2QuarterMin]
 	tmp2 := 0.0
 	if f.mainData.Is[gr][ch][isPos] < 0.0 {
 		tmp2 = -powtab34[int(-f.mainData.Is[gr][ch][isPos])]
@@ -161,14 +177,13 @@ func (f *Frame) requantizeProcessLong(gr, ch, isPos, sfb int) {
 }
 
 func (f *Frame) requantizeProcessShort(gr, ch, isPos, sfb, win int) {
-	sfMult := 0.5
+	m := 2
 	if f.sideInfo.ScalefacScale[gr][ch] != 0 {
-		sfMult = 1.0
+		m = 4
 	}
-	idx := -(sfMult * float64(f.mainData.ScalefacS[gr][ch][sfb][win])) +
-		0.25*(float64(f.sideInfo.GlobalGain[gr][ch])-210.0-
-			8.0*float64(f.sideInfo.SubblockGain[gr][ch][win]))
-	tmp1 := math.Pow(2.0, idx)
+	k := -m*f.mainData.ScalefacS[gr][ch][sfb][win] +
+		f.sideInfo.GlobalGain[gr][ch] - 210 - 8*f.sideInfo.SubblockGain[gr][ch][win]
+	tmp1 := pow2Quarter[k-pow2QuarterMin]
 	tmp2 := 0.0
 	if f.mainData.Is[gr][ch][isPos] < 0 {
 		tmp2 = -powtab34[int(-f.mainData.Is[gr][ch][isPos])]
