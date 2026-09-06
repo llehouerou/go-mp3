@@ -64,7 +64,7 @@ func TestSynthesisMatrixAgainstOracle(t *testing.T) {
 	for n, in := range inputs {
 		want := matrixSynthesis(&in)
 
-		var v [1024]float32
+		var v [64]float32
 		synthesisMatrix(&in, &v)
 
 		var scale float32
@@ -84,11 +84,6 @@ func TestSynthesisMatrixAgainstOracle(t *testing.T) {
 					n, i, v[i], want[i], diff, float64(scale*tol))
 			}
 		}
-		for i := 64; i < 1024; i++ {
-			if v[i] != 0 {
-				t.Fatalf("input %d: synthesisMatrix wrote past the first 64 entries at %d", n, i)
-			}
-		}
 	}
 }
 
@@ -99,7 +94,7 @@ func BenchmarkSynthesisMatrix(b *testing.B) {
 	for k := range 32 {
 		in[k] = float32(r.NormFloat64())
 	}
-	var v [1024]float32
+	var v [64]float32
 
 	for b.Loop() {
 		synthesisMatrix(&in, &v)

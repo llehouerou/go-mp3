@@ -63,7 +63,10 @@ type Frame struct {
 
 	mainDataBits *bits.Bits
 	store        [2][32][18]float32
-	vVec         [2][1024]float32
+	// vVec is the polyphase synthesis history, used as a circular buffer:
+	// vOff[ch] is where its logical index 0 currently sits.
+	vVec [2][1024]float32
+	vOff [2]int
 }
 
 type FullReader interface {
@@ -127,6 +130,7 @@ func Read(source FullReader, position int64, prev *Frame) (frame *Frame, startPo
 	if prev != nil {
 		nf.store = prev.store
 		nf.vVec = prev.vVec
+		nf.vOff = prev.vOff
 	}
 	return nf, pos, nil
 }
@@ -637,33 +641,41 @@ var synthDtbl = [512]float32{
 }
 
 func (f *Frame) subbandSynthesis(gr, ch int, out []byte) {
-	// Scratch, kept local: Frame is heap-allocated per frame, so hanging these
+	// Scratch, kept local: Frame is heap-allocated per frame, so hanging this
 	// off it would cost an allocation and a copy per frame instead of saving one.
-	uVec := make([]float32, 512)
 	var sVec [32]float32
 
+	v := &f.vVec[ch]
+	p := f.vOff[ch]
 	nch := f.header.NumberOfChannels()
 	for ss := range 18 { // Loop through 18 samples in 32 subbands
-		copy(f.vVec[ch][64:1024], f.vVec[ch][0:1024-64])
+		// Make room for 64 new values by moving the window instead of the
+		// history: p stays a multiple of 64, so the new block never wraps.
+		p = (p - 64) & 1023
 		d := f.mainData.Is[gr][ch]
 		for i := range 32 { // Copy next 32 time samples to a temp vector
 			sVec[i] = d[i*18+ss] //nolint:gosec // i is 0-31 and ss is 0-17, so max index is 31*18+17=575 < 576
 		}
-		synthesisMatrix(&sVec, &f.vVec[ch]) // Fills vVec[0:64], the ISO n_win matrixing
-		v := f.vVec[ch]
-		for i := 0; i < 512; i += 64 { // Build the U vector
-			copy(uVec[i:i+32], v[(i<<1):(i<<1)+32])
-			copy(uVec[i+32:i+64], v[(i<<1)+96:(i<<1)+128])
-		}
-		for i := range 512 { // Window by uVec[i] with synthDtbl[i]
-			uVec[i] *= synthDtbl[i]
-		}
-		for i := range 32 { // Calc 32 samples,store in outdata vector
-			sum := float32(0)
-			for j := 0; j < 512; j += 32 {
-				sum += uVec[j+i]
+		synthesisMatrix(&sVec, (*[64]float32)(v[p:p+64])) // The ISO n_win matrixing
+
+		// Build, window and sum in one pass over the 16 32-value runs the U
+		// vector was assembled from: each of its 512 entries was read exactly
+		// once, so materialising it only cost a store and a load per entry.
+		// Runs start on a multiple of 32, so none of them wraps, and q ascending
+		// is the order the separate sum used, so per output sample the additions
+		// still happen in the same sequence.
+		var sums [32]float32
+		for q := range 16 {
+			base := (p + 128*(q/2) + 96*(q%2)) & 1023
+			src := (*[32]float32)(v[base : base+32])
+			win := (*[32]float32)(synthDtbl[32*q : 32*q+32])
+			for i := range sums {
+				sums[i] += src[i] * win[i]
 			}
-			// sum now contains time sample 32*ss+i. Convert to 16-bit signed int
+		}
+
+		for i, sum := range sums { // Calc 32 samples,store in outdata vector
+			// sum is time sample 32*ss+i. Convert to 16-bit signed int
 			samp := int(sum * 32767)
 			if samp > 32767 {
 				samp = 32767
@@ -689,4 +701,5 @@ func (f *Frame) subbandSynthesis(gr, ch int, out []byte) {
 			}
 		}
 	}
+	f.vOff[ch] = p
 }

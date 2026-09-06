@@ -67,14 +67,14 @@ func dct32(in, out *[32]float32) {
 	*out = *src
 }
 
-// synthesisMatrix fills the 64 vVec entries of the polyphase synthesis from the
+// synthesisMatrix fills the 64 new vVec entries of the polyphase synthesis from the
 // 32-point DCT-II of the subband samples. The ISO matrix
 // n[i][j] = cos((16+i)*(2j+1)*pi/64) is the DCT-II continued past k=31: with
 // m = 16+i it is even in m, has period 128, and satisfies n(64-m) = -n(m), so
 // every row is +/- one DCT coefficient.
 //
 //nolint:gosec // fixed-size arrays; every index below is provably in range
-func synthesisMatrix(s *[32]float32, v *[1024]float32) {
+func synthesisMatrix(s *[32]float32, v *[64]float32) {
 	var h [32]float32
 	dct32(s, &h)
 
