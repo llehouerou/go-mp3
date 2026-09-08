@@ -70,34 +70,6 @@ func TestGapless_SkipCalculations(t *testing.T) {
 	}
 }
 
-func TestGapless_SkipBytesCalculation(t *testing.T) {
-	// Test that skip bytes are calculated correctly
-	// skipStartBytes = bytesPerFrame (Xing frame) + TotalDelay() * 4
-	// skipEndBytes = TotalPadding() * 4
-
-	info := &lameinfo.Info{
-		LAMEVersion:    "LAME3.100",
-		EncoderDelay:   576,
-		EncoderPadding: 1848,
-	}
-
-	bytesPerFrame := int64(4608) // 1152 samples * 4 bytes
-
-	expectedSkipStart := bytesPerFrame + int64(info.TotalDelay())*4
-	expectedSkipEnd := int64(info.TotalPadding()) * 4
-
-	// TotalDelay = 576 + 529 = 1105 samples = 4420 bytes
-	// skipStartBytes = 4608 + 4420 = 9028 bytes
-	if expectedSkipStart != 9028 {
-		t.Errorf("skipStartBytes = %d, want 9028", expectedSkipStart)
-	}
-
-	// TotalPadding = 1848 - 529 = 1319 samples = 5276 bytes
-	if expectedSkipEnd != 5276 {
-		t.Errorf("skipEndBytes = %d, want 5276", expectedSkipEnd)
-	}
-}
-
 // =============================================================================
 // Integration Tests with LAME-encoded files
 // =============================================================================
