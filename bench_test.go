@@ -21,6 +21,8 @@ import (
 	"testing"
 )
 
+// BenchmarkDecode decodes whole files. Throughput is PCM bytes per second, and
+// the output goes to io.Discard so allocs/op are the decoder's own.
 func BenchmarkDecode(b *testing.B) {
 	benchmarks := []struct {
 		name string
@@ -36,10 +38,15 @@ func BenchmarkDecode(b *testing.B) {
 			b.Fatal(err)
 		}
 		src := bytes.NewReader(buf)
+		d, err := NewDecoder(src)
+		if err != nil {
+			b.Fatal(err)
+		}
+		pcmBytes := d.Length()
 
 		b.Run(bm.name, func(b *testing.B) {
 			b.ReportAllocs()
-			b.SetBytes(int64(len(buf)))
+			b.SetBytes(pcmBytes)
 			for b.Loop() {
 				if _, err := src.Seek(0, io.SeekStart); err != nil {
 					b.Fatal(err)
@@ -48,7 +55,7 @@ func BenchmarkDecode(b *testing.B) {
 				if err != nil {
 					b.Fatal(err)
 				}
-				if _, err := io.ReadAll(d); err != nil {
+				if _, err := io.Copy(io.Discard, d); err != nil {
 					b.Fatal(err)
 				}
 			}
