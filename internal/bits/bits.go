@@ -14,16 +14,20 @@
 
 package bits
 
-import "errors"
+import (
+	"encoding/binary"
+	"errors"
+)
 
 // ErrOutOfBounds is returned when attempting to read past the end of the buffer.
 var ErrOutOfBounds = errors.New("bits: read past end of buffer")
 
+// Bits reads a byte slice MSB first. Reads past the end return zero and set a
+// sticky error.
 type Bits struct {
-	vec     []byte
-	bitPos  int
-	bytePos int
-	err     error
+	vec []byte
+	pos int // in bits
+	err error
 }
 
 // Err returns any error that occurred during bit reading operations.
@@ -43,7 +47,7 @@ func New(vec []byte) *Bits {
 func (b *Bits) Shift(keep int) {
 	copy(b.vec, b.vec[len(b.vec)-keep:])
 	b.vec = b.vec[:keep]
-	b.bitPos, b.bytePos, b.err = 0, 0, nil
+	b.pos, b.err = 0, nil
 }
 
 // Grow appends n zero bytes and returns them for the caller to fill.
@@ -53,46 +57,45 @@ func (b *Bits) Grow(n int) []byte {
 }
 
 func (b *Bits) Bit() int {
-	if len(b.vec) <= b.bytePos {
+	i := b.pos >> 3
+	if i >= len(b.vec) {
 		b.err = ErrOutOfBounds
 		return 0
 	}
-	// bitPos is always 0-7 (controlled by modulo 8 arithmetic), so conversion is safe
-	tmp := uint(b.vec[b.bytePos]) >> (7 - uint(b.bitPos)) //nolint:gosec // bitPos is always 0-7
-	tmp &= 0x01
-	b.bytePos += (b.bitPos + 1) >> 3
-	b.bitPos = (b.bitPos + 1) & 0x07
-	return int(tmp) //nolint:gosec // tmp is always 0-1
+	v := int(b.vec[i]>>(7-b.pos&7)) & 1
+	b.pos++
+	return v
 }
 
+// Bits reads the next num bits, num at most 57, as an unsigned integer.
 func (b *Bits) Bits(num int) int {
 	if num == 0 {
 		return 0
 	}
-	// Check if we have enough bits remaining
-	currentBitPos := b.bytePos*8 + b.bitPos
-	totalBits := len(b.vec) * 8
-	if currentBitPos+num > totalBits {
+	if b.pos+num > len(b.vec)*8 {
 		b.err = ErrOutOfBounds
 		return 0
 	}
-	bb := make([]byte, 4)
-	copy(bb, b.vec[b.bytePos:])
-	tmp := (uint32(bb[0]) << 24) | (uint32(bb[1]) << 16) | (uint32(bb[2]) << 8) | (uint32(bb[3]))
-	tmp <<= uint(b.bitPos)   //nolint:gosec // bitPos is always 0-7, safe for uint conversion
-	tmp >>= (32 - uint(num)) //nolint:gosec // num is always 0-32 for MP3 parsing
-	b.bytePos += (b.bitPos + num) >> 3
-	b.bitPos = (b.bitPos + num) & 0x07
-	return int(tmp) //nolint:gosec // tmp fits in int after right shift
+	i := b.pos >> 3
+	var w uint64
+	if i+8 <= len(b.vec) {
+		w = binary.BigEndian.Uint64(b.vec[i:])
+	} else {
+		for j, c := range b.vec[i:] {
+			w |= uint64(c) << (56 - 8*j)
+		}
+	}
+	w <<= b.pos & 7
+	b.pos += num
+	return int(w >> (64 - num)) //nolint:gosec // at most num <= 57 bits remain
 }
 
 func (b *Bits) BitPos() int {
-	return b.bytePos<<3 + b.bitPos
+	return b.pos
 }
 
 func (b *Bits) SetPos(pos int) {
-	b.bytePos = pos >> 3
-	b.bitPos = pos & 0x7
+	b.pos = pos
 }
 
 func (b *Bits) LenInBytes() int {
