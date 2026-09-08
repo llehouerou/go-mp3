@@ -16,8 +16,52 @@ package mp3
 
 import (
 	"bytes"
+	"io"
 	"testing"
+
+	"github.com/llehouerou/go-mp3/internal/testaudio"
 )
+
+// FuzzDecode mutates real LAME frames and synthesised MPEG-1/2 files, which
+// is what reaches the parser paths no common encoder produces: mixed blocks,
+// intensity stereo, out-of-range region counts, reservoir back-pointers into
+// nothing. Any input must decode to an error or to PCM, never panic.
+func FuzzDecode(f *testing.F) {
+	f.Add(testaudio.Build(testaudio.Options{Frames: 3, RealAudio: true}))
+	f.Add(testaudio.Build(testaudio.Options{Frames: 3, RealAudio: true, XingMode: testaudio.Xing, LAME: true, EncoderDelay: 576, EncoderPadding: 1000}))
+	f.Add(testaudio.Build(testaudio.Options{Frames: 2}))
+	f.Add(testaudio.Build(testaudio.Options{Frames: 2, Version: 2, Mono: true}))
+	f.Add(testaudio.Build(testaudio.Options{Frames: 2, Version: 2, SampleRateIndex: 1}))
+	f.Add(withIntensityStereo(testaudio.Build(testaudio.Options{Frames: 3, RealAudio: true})))
+	f.Fuzz(func(_ *testing.T, data []byte) {
+		d, err := NewDecoder(bytes.NewReader(data))
+		if err != nil {
+			return
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(d, 1<<20))
+		if _, err := d.Seek(4608, io.SeekStart); err == nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(d, 1<<20))
+		}
+	})
+}
+
+// withIntensityStereo sets the intensity bit of the mode extension in every
+// frame header, since no encoder in use emits intensity stereo and the fuzzer
+// does not find the bit on its own.
+func withIntensityStereo(data []byte) []byte {
+	src := newSource(bytes.NewReader(data))
+	for {
+		h, start, err := src.nextFrame()
+		if err != nil {
+			return data
+		}
+		data[start+3] |= 0x10
+		size, _ := h.FrameSize()
+		if _, err := src.Seek(int64(size-4), io.SeekCurrent); err != nil {
+			return data
+		}
+	}
+}
 
 func TestFuzzing(_ *testing.T) {
 	inputs := []string{
