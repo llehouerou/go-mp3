@@ -615,6 +615,12 @@ func (f *Frame) subbandSynthesis(gr, ch int, out []byte) {
 		// Runs start on a multiple of 32, so none of them wraps, and q ascending
 		// is the order the separate sum used, so per output sample the additions
 		// still happen in the same sequence.
+		//
+		// The 32 accumulators live in memory on purpose: with q outer they are
+		// independent and the loop runs at load/store throughput. Keeping one
+		// output's sum in a register (i outer, 16 taps) makes it a dependency
+		// chain and measured 17% slower; unrolling i by 4 measured no change
+		// (#19). What is left here is SIMD.
 		var sums [32]float32
 		for q := range 16 {
 			base := (p + 128*(q/2) + 96*(q%2)) & 1023
