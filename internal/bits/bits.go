@@ -12,54 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package bits reads a byte slice bit by bit, MSB first.
 package bits
 
-import (
-	"encoding/binary"
-	"errors"
-)
+import "encoding/binary"
 
-// ErrOutOfBounds is returned when attempting to read past the end of the buffer.
-var ErrOutOfBounds = errors.New("bits: read past end of buffer")
-
-// Bits reads a byte slice MSB first. Reads past the end return zero and set a
-// sticky error.
+// Bits reads a byte slice MSB first. Reads past the end yield zero and leave
+// the position where it was: the callers decode to a bit count carried in
+// the stream, not to the end of a buffer, so running out of bytes is not an
+// error at this level.
 type Bits struct {
 	vec []byte
 	pos int // in bits
-	err error
 }
 
-// Err returns any error that occurred during bit reading operations.
-// Once an error occurs, subsequent reads will continue to return the error.
-func (b *Bits) Err() error {
-	return b.err
-}
-
-func New(vec []byte) *Bits {
-	return &Bits{
-		vec: vec,
-	}
-}
-
-// Shift discards all but the last keep bytes and rewinds to the first bit,
-// forgetting any earlier read error.
-func (b *Bits) Shift(keep int) {
-	copy(b.vec, b.vec[len(b.vec)-keep:])
-	b.vec = b.vec[:keep]
-	b.pos, b.err = 0, nil
-}
-
-// Grow appends n zero bytes and returns them for the caller to fill.
-func (b *Bits) Grow(n int) []byte {
-	b.vec = append(b.vec, make([]byte, n)...)
-	return b.vec[len(b.vec)-n:]
+// New returns a reader positioned at the first bit of vec.
+func New(vec []byte) Bits {
+	return Bits{vec: vec}
 }
 
 func (b *Bits) Bit() int {
 	i := b.pos >> 3
 	if i >= len(b.vec) {
-		b.err = ErrOutOfBounds
 		return 0
 	}
 	v := int(b.vec[i]>>(7-b.pos&7)) & 1
@@ -90,7 +64,6 @@ func (b *Bits) Bits(num int) int {
 		return 0
 	}
 	if b.pos+num > len(b.vec)*8 {
-		b.err = ErrOutOfBounds
 		return 0
 	}
 	w := b.window()
@@ -107,11 +80,7 @@ func (b *Bits) Peek(num int) int {
 // Skip consumes num bits, stopping at the end of the buffer exactly as num
 // calls to Bit would.
 func (b *Bits) Skip(num int) {
-	b.pos += num
-	if end := len(b.vec) * 8; b.pos > end {
-		b.pos = end
-		b.err = ErrOutOfBounds
-	}
+	b.pos = min(b.pos+num, len(b.vec)*8)
 }
 
 func (b *Bits) BitPos() int {
@@ -120,8 +89,4 @@ func (b *Bits) BitPos() int {
 
 func (b *Bits) SetPos(pos int) {
 	b.pos = pos
-}
-
-func (b *Bits) LenInBytes() int {
-	return len(b.vec)
 }

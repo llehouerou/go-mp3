@@ -74,6 +74,9 @@ type Reader struct {
 	// channels the header declares are written; the rest are stale.
 	Ch [2][2]Channel
 
+	// reservoir holds this frame's main data behind the tail of earlier
+	// frames' that main_data_begin points back into; res reads it.
+	reservoir     []byte
 	res           bits.Bits
 	mainDataBegin int
 	scfsi         [2][4]int
@@ -251,13 +254,16 @@ func (r *Reader) fillReservoir(source FullReader, size int) error {
 	if size > 1500 {
 		return fmt.Errorf("mp3: size = %d", size)
 	}
-	r.res.Shift(min(r.mainDataBegin, r.res.LenInBytes()))
-	if n, err := source.ReadFull(r.res.Grow(size)); n < size {
+	keep := min(r.mainDataBegin, len(r.reservoir))
+	copy(r.reservoir, r.reservoir[len(r.reservoir)-keep:])
+	r.reservoir = append(r.reservoir[:keep], make([]byte, size)...)
+	if n, err := source.ReadFull(r.reservoir[keep:]); n < size {
 		if truncated(err) {
 			return &consts.UnexpectedEOFError{At: "maindata.Read"}
 		}
 		return err
 	}
+	r.res = bits.New(r.reservoir)
 	return nil
 }
 

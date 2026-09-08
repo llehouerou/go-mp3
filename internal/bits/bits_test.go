@@ -1,17 +1,3 @@
-// Copyright 2017 Hajime Hoshi
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package bits_test
 
 import (
@@ -20,106 +6,49 @@ import (
 	"github.com/llehouerou/go-mp3/internal/bits"
 )
 
-func TestBit_OutOfBounds_ShouldReportError(t *testing.T) {
-	// Create a 2-byte buffer
-	b := bits.New([]byte{0xFF, 0xFF}) // 16 bits total
-
-	// Read all 16 bits - should succeed
-	for i := range 16 {
-		_ = b.Bit()
-		if b.Err() != nil {
-			t.Fatalf("unexpected error after reading bit %d: %v", i, b.Err())
+func TestBitsMSBFirst(t *testing.T) {
+	b := bits.New([]byte{0b01010101, 0b10101010, 0b11001100, 0b00110011})
+	for i, want := range []int{0, 1, 0, 1} {
+		if got := b.Bits(1); got != want {
+			t.Fatalf("bit %d = %d, want %d", i, got, want)
 		}
 	}
-
-	// Now we're at the end. Reading another bit should indicate an error.
-	val := b.Bit()
-	if b.Err() == nil {
-		t.Errorf("expected error after reading past buffer, got value %d with no error", val)
+	if got := b.Bits(8); got != 0b01011010 {
+		t.Fatalf("Bits(8) = %#b, want 01011010", got)
+	}
+	if got := b.Peek(12); got != 0b101011001100 {
+		t.Fatalf("Peek(12) = %#b", got)
+	}
+	if got := b.Bits(12); got != 0b101011001100 {
+		t.Fatalf("Bits(12) = %#b", got)
+	}
+	if b.BitPos() != 24 {
+		t.Fatalf("BitPos() = %d, want 24", b.BitPos())
 	}
 }
 
-func TestBits_OutOfBounds_ShouldReportError(t *testing.T) {
-	// Create a 2-byte buffer (16 bits)
-	b := bits.New([]byte{0xAB, 0xCD})
-
-	// Read 8 bits - should succeed
-	val := b.Bits(8)
-	if b.Err() != nil {
-		t.Fatalf("unexpected error reading first 8 bits: %v", b.Err())
+// TestPastTheEndReadsZero pins the contract every caller relies on: the bit
+// reservoir may be shorter than a frame's main_data_begin claims, and Huffman
+// decoding runs to a bit count, not to a buffer end. Reads past the end
+// yield zero and leave the position where it was; Skip stops at the end.
+func TestPastTheEndReadsZero(t *testing.T) {
+	b := bits.New([]byte{0xff, 0xff})
+	b.Skip(12)
+	if got := b.Bits(8); got != 0 || b.BitPos() != 12 {
+		t.Fatalf("Bits(8) over the end = %d at pos %d, want 0 at 12", got, b.BitPos())
 	}
-	if val != 0xAB {
-		t.Errorf("expected 0xAB, got 0x%X", val)
+	if got := b.Peek(8); got != 0b11110000 {
+		t.Fatalf("Peek(8) over the end = %#b, want 11110000", got)
 	}
-
-	// Read another 8 bits - should succeed (exactly at end)
-	val = b.Bits(8)
-	if b.Err() != nil {
-		t.Fatalf("unexpected error reading last 8 bits: %v", b.Err())
+	if got := b.Bits(4); got != 0xf || b.BitPos() != 16 {
+		t.Fatalf("Bits(4) to the end = %#x at pos %d, want f at 16", got, b.BitPos())
 	}
-	if val != 0xCD {
-		t.Errorf("expected 0xCD, got 0x%X", val)
+	if got := b.Bit(); got != 0 || b.BitPos() != 16 {
+		t.Fatalf("Bit() past the end = %d at pos %d, want 0 at 16", got, b.BitPos())
 	}
-
-	// Now read past the buffer - should indicate an error
-	val = b.Bits(8)
-	if b.Err() == nil {
-		t.Errorf("expected error after reading past buffer, got value %d with no error", val)
-	}
-}
-
-func TestBits_PartialOutOfBounds_ShouldReportError(t *testing.T) {
-	// Create a 1-byte buffer (8 bits)
-	b := bits.New([]byte{0xFF})
-
-	// Read 4 bits - should succeed
-	_ = b.Bits(4)
-	if b.Err() != nil {
-		t.Fatalf("unexpected error reading first 4 bits: %v", b.Err())
-	}
-
-	// Try to read 8 more bits (only 4 available) - should indicate error
-	val := b.Bits(8)
-	if b.Err() == nil {
-		t.Errorf("expected error when reading 8 bits with only 4 available, got value %d", val)
-	}
-}
-
-func TestBits(t *testing.T) {
-	b1 := byte(85)  // 01010101
-	b2 := byte(170) // 10101010
-	b3 := byte(204) // 11001100
-	b4 := byte(51)  // 00110011
-	b := bits.New([]byte{b1, b2, b3, b4})
-	if b.Bits(1) != 0 {
-		t.Fail()
-	}
-	if b.Bits(1) != 1 {
-		t.Fail()
-	}
-	if b.Bits(1) != 0 {
-		t.Fail()
-	}
-	if b.Bits(1) != 1 {
-		t.Fail()
-	}
-	if b.Bits(8) != 90 /* 01011010 */ {
-		t.Fail()
-	}
-	if b.Bits(12) != 2764 /* 101011001100 */ {
-		t.Fail()
-	}
-}
-
-func TestShiftGrow(t *testing.T) {
-	b := bits.New([]byte{1, 2, 3, 4})
-	b.Bits(20)
-	b.Shift(2) // keep {3, 4}, rewind
-	copy(b.Grow(2), []byte{5, 6})
-	if b.LenInBytes() != 4 || b.BitPos() != 0 || b.Err() != nil {
-		t.Fatalf("len=%d pos=%d err=%v", b.LenInBytes(), b.BitPos(), b.Err())
-	}
-	if got := b.Bits(32); got != 0x03040506 {
-		t.Fatalf("got %#x", got)
+	b.SetPos(8)
+	b.Skip(100)
+	if b.BitPos() != 16 {
+		t.Fatalf("Skip past the end left pos at %d, want 16", b.BitPos())
 	}
 }

@@ -52,7 +52,7 @@ func TestDecodeEveryCodeword(t *testing.T) {
 				buf[i] = byte(w >> (56 - 8*i))
 			}
 			m := bits.New(buf)
-			x, y, v, wv, err := Decode(m, tableNum)
+			x, y, v, wv, err := Decode(&m, tableNum)
 			if err != nil {
 				t.Fatalf("table %d code %0*b: %v", tableNum, l.depth, l.code, err)
 			}
