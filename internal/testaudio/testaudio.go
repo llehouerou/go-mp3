@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/llehouerou/go-mp3/internal/consts"
 	"github.com/llehouerou/go-mp3/internal/frameheader"
 	"github.com/llehouerou/go-mp3/lameinfo"
 )
@@ -143,12 +142,12 @@ func (o Options) realFrame(i int) []byte {
 }
 
 // resolve fills in the defaults: MPEG1, and a bitrate typical of the version.
-func (o Options) resolve() (version consts.Version, bitratesKbps []int) {
+func (o Options) resolve() (version frameheader.Version, bitratesKbps []int) {
 	version = mpegVersion(o.Version)
 	if len(o.BitratesKbps) > 0 {
 		return version, o.BitratesKbps
 	}
-	if version == consts.Version1 {
+	if version == frameheader.Version1 {
 		return version, []int{128}
 	}
 	return version, []int{64}
@@ -166,31 +165,31 @@ func FrameSize(o Options) int {
 }
 
 // mpegVersion maps the 1/2/25 spelling used by Options onto the header field.
-func mpegVersion(v int) consts.Version {
+func mpegVersion(v int) frameheader.Version {
 	switch v {
 	case 0, 1:
-		return consts.Version1
+		return frameheader.Version1
 	case 2:
-		return consts.Version2
+		return frameheader.Version2
 	case 25:
-		return consts.Version2_5
+		return frameheader.Version2_5
 	}
 	panic(fmt.Sprintf("testaudio: unknown MPEG version %d", v))
 }
 
 // header assembles a frame header from its fields.
-func header(version consts.Version, mono bool, sampleRateIndex, bitrateKbps int, padding bool) frameheader.FrameHeader {
+func header(version frameheader.Version, mono bool, sampleRateIndex, bitrateKbps int, padding bool) frameheader.FrameHeader {
 	h := frameheader.FrameHeader(0xffe00000)
 	h |= field(int(version), 19)
-	h |= field(int(consts.Layer3), 17)
+	h |= field(int(frameheader.Layer3), 17)
 	h |= 0x00010000 // protection bit set = no CRC
 	h |= field(sampleRateIndex, 10)
 	if padding {
 		h |= 0x00000200
 	}
-	mode := consts.ModeStereo
+	mode := frameheader.ModeStereo
 	if mono {
-		mode = consts.ModeSingleChannel
+		mode = frameheader.ModeSingleChannel
 	}
 	h |= field(int(mode), 6)
 	h |= field(bitrateIndex(h, bitrateKbps), 12)
@@ -235,7 +234,7 @@ func frame(h frameheader.FrameHeader, payload []byte) []byte {
 }
 
 // xingFrame renders the VBR header frame that precedes the audio frames.
-func (o Options) xingFrame(version consts.Version, bitrateKbps int, byteCount uint32) []byte {
+func (o Options) xingFrame(version frameheader.Version, bitrateKbps int, byteCount uint32) []byte {
 	tag := "Xing"
 	if o.XingMode == Info {
 		tag = "Info"

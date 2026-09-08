@@ -11,7 +11,6 @@ import (
 	"math"
 
 	"github.com/llehouerou/go-mp3/internal/bits"
-	"github.com/llehouerou/go-mp3/internal/consts"
 	"github.com/llehouerou/go-mp3/internal/frameheader"
 	"github.com/llehouerou/go-mp3/internal/huffman"
 )
@@ -24,7 +23,7 @@ type FullReader interface {
 type Channel struct {
 	// Lines are the Huffman-decoded frequency lines; every DSP stage rewrites
 	// them in place. Lines[Count1:] are zero.
-	Lines [consts.SamplesPerGr]float32
+	Lines [frameheader.SamplesPerGranule]float32
 	// Count1 is the first line of the all-zero region.
 	Count1 int
 
@@ -86,7 +85,7 @@ type Reader struct {
 // Read parses the frame whose header h was just read from source: CRC, side
 // information, main data through the reservoir, scalefactors and Huffman
 // data, for every granule and channel. A source that runs out mid-frame gives
-// a *consts.UnexpectedEOFError; a malformed frame gives another error. In both
+// a *frameheader.UnexpectedEOFError; a malformed frame gives another error. In both
 // cases Ch is undefined and the frame must be dropped.
 func (r *Reader) Read(source FullReader, h frameheader.FrameHeader) error {
 	if h.ProtectionBit() == 0 {
@@ -103,8 +102,8 @@ func (r *Reader) Read(source FullReader, h frameheader.FrameHeader) error {
 	}
 
 	lsf := h.LowSamplingFrequency()
-	r.Long = consts.SfBandIndices[lsf][h.SamplingFrequency()][consts.SfBandIndicesLong]
-	r.Short = consts.SfBandIndices[lsf][h.SamplingFrequency()][consts.SfBandIndicesShort]
+	bands := &sfBands[lsf][h.SamplingFrequency()]
+	r.Long, r.Short = bands.long, bands.short
 
 	if err := r.readSideInfo(source, h); err != nil {
 		return err
@@ -156,7 +155,7 @@ func readCRC(source FullReader) error {
 	buf := make([]byte, 2)
 	if n, err := source.ReadFull(buf); n < 2 {
 		if truncated(err) {
-			return &consts.UnexpectedEOFError{At: "readCRC"}
+			return &frameheader.UnexpectedEOFError{At: "readCRC"}
 		}
 		return fmt.Errorf("mp3: error at readCRC: %w", err)
 	}
@@ -175,7 +174,7 @@ func (r *Reader) readSideInfo(source FullReader, h frameheader.FrameHeader) erro
 	n, err := source.ReadFull(buf)
 	if n < size {
 		if truncated(err) {
-			return &consts.UnexpectedEOFError{At: "sideinfo.Read"}
+			return &frameheader.UnexpectedEOFError{At: "sideinfo.Read"}
 		}
 		return fmt.Errorf("mp3: couldn't read sideinfo %d bytes: %w", size, err)
 	}
@@ -187,7 +186,7 @@ func (r *Reader) readSideInfo(source FullReader, h frameheader.FrameHeader) erro
 
 	r.mainDataBegin = s.Bits(bitsToRead[0])
 	// Private bits, unused.
-	if h.Mode() == consts.ModeSingleChannel {
+	if h.Mode() == frameheader.ModeSingleChannel {
 		s.Skip(bitsToRead[1])
 	} else {
 		s.Skip(bitsToRead[2])
@@ -259,7 +258,7 @@ func (r *Reader) fillReservoir(source FullReader, size int) error {
 	r.reservoir = append(r.reservoir[:keep], make([]byte, size)...)
 	if n, err := source.ReadFull(r.reservoir[keep:]); n < size {
 		if truncated(err) {
-			return &consts.UnexpectedEOFError{At: "maindata.Read"}
+			return &frameheader.UnexpectedEOFError{At: "maindata.Read"}
 		}
 		return err
 	}
@@ -410,7 +409,7 @@ func (r *Reader) readHuffman(c *Channel, part2Start int) error {
 	m := &r.res
 	is := &c.Lines
 	if c.part2_3Length == 0 {
-		*is = [consts.SamplesPerGr]float32{}
+		*is = [frameheader.SamplesPerGranule]float32{}
 		c.Count1 = 0
 		return nil
 	}
@@ -419,8 +418,8 @@ func (r *Reader) readHuffman(c *Channel, part2Start int) error {
 	region1Start := 0
 	region2Start := 0
 	if c.winSwitchFlag == 1 && c.BlockType == 2 {
-		region1Start = 36                  // sfb[9/3]*3=36
-		region2Start = consts.SamplesPerGr // No Region2 for short block case.
+		region1Start = 36                            // sfb[9/3]*3=36
+		region2Start = frameheader.SamplesPerGranule // No Region2 for short block case.
 	} else {
 		l := r.Long
 		i := c.region0Count + 1
@@ -434,7 +433,7 @@ func (r *Reader) readHuffman(c *Channel, part2Start int) error {
 		}
 		// Clamp to the end of the scalefactor band table, as mpg123 and ffmpeg do.
 		if j >= len(l) {
-			region2Start = consts.SamplesPerGr
+			region2Start = frameheader.SamplesPerGranule
 		} else {
 			region2Start = l[j]
 		}
@@ -471,17 +470,17 @@ func (r *Reader) readHuffman(c *Channel, part2Start int) error {
 		}
 		is[isPos] = float32(v)
 		isPos++
-		if isPos >= consts.SamplesPerGr {
+		if isPos >= frameheader.SamplesPerGranule {
 			break
 		}
 		is[isPos] = float32(w)
 		isPos++
-		if isPos >= consts.SamplesPerGr {
+		if isPos >= frameheader.SamplesPerGranule {
 			break
 		}
 		is[isPos] = float32(x)
 		isPos++
-		if isPos >= consts.SamplesPerGr {
+		if isPos >= frameheader.SamplesPerGranule {
 			break
 		}
 		is[isPos] = float32(y)
@@ -492,11 +491,47 @@ func (r *Reader) readHuffman(c *Channel, part2Start int) error {
 		isPos -= 4
 	}
 	c.Count1 = max(isPos, 0)
-	for i := c.Count1; i < consts.SamplesPerGr; i++ {
+	for i := c.Count1; i < frameheader.SamplesPerGranule; i++ {
 		is[i] = 0
 	}
 	m.SetPos(bitPosEnd + 1)
 	return nil
+}
+
+// sfBands holds the scalefactor band start lines, indexed by MPEG-2 (LSF) and
+// then by the header's sampling frequency field: 44.1, 48, 32 kHz for MPEG-1
+// and 22.05, 24, 16 kHz for MPEG-2. Long bands are 22 entries plus the end of
+// the granule; short bands 13 plus the end of one window (192 lines).
+// ISO/IEC 11172-3 Table B.8 and ISO/IEC 13818-3 Table B.2.
+var sfBands = [2][3]struct{ long, short []int }{
+	{ // MPEG 1
+		{ // 44.1 kHz
+			[]int{0, 4, 8, 12, 16, 20, 24, 30, 36, 44, 52, 62, 74, 90, 110, 134, 162, 196, 238, 288, 342, 418, 576},
+			[]int{0, 4, 8, 12, 16, 22, 30, 40, 52, 66, 84, 106, 136, 192},
+		},
+		{ // 48 kHz
+			[]int{0, 4, 8, 12, 16, 20, 24, 30, 36, 42, 50, 60, 72, 88, 106, 128, 156, 190, 230, 276, 330, 384, 576},
+			[]int{0, 4, 8, 12, 16, 22, 28, 38, 50, 64, 80, 100, 126, 192},
+		},
+		{ // 32 kHz
+			[]int{0, 4, 8, 12, 16, 20, 24, 30, 36, 44, 54, 66, 82, 102, 126, 156, 194, 240, 296, 364, 448, 550, 576},
+			[]int{0, 4, 8, 12, 16, 22, 30, 42, 58, 78, 104, 138, 180, 192},
+		},
+	},
+	{ // MPEG 2
+		{ // 22.05 kHz
+			[]int{0, 6, 12, 18, 24, 30, 36, 44, 54, 66, 80, 96, 116, 140, 168, 200, 238, 284, 336, 396, 464, 522, 576},
+			[]int{0, 4, 8, 12, 18, 24, 32, 42, 56, 74, 100, 132, 174, 192},
+		},
+		{ // 24 kHz
+			[]int{0, 6, 12, 18, 24, 30, 36, 44, 54, 66, 80, 96, 114, 136, 162, 194, 232, 278, 332, 394, 464, 540, 576},
+			[]int{0, 4, 8, 12, 18, 26, 36, 48, 62, 80, 104, 136, 180, 192},
+		},
+		{ // 16 kHz
+			[]int{0, 6, 12, 18, 24, 30, 36, 44, 54, 66, 80, 96, 116, 140, 168, 200, 238, 284, 336, 396, 464, 522, 576},
+			[]int{0, 4, 8, 12, 18, 26, 36, 48, 62, 80, 104, 134, 174, 192},
+		},
+	},
 }
 
 // pow2QuarterMin is the smallest requantization exponent numerator k, where the

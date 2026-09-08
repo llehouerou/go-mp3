@@ -19,21 +19,74 @@ import (
 	"fmt"
 	"io"
 	"time"
-
-	"github.com/llehouerou/go-mp3/internal/consts"
 )
 
-// A mepg1FrameHeader is MPEG1 Layer 1-3 frame header
+// UnexpectedEOFError reports a source that ran out part-way through a frame:
+// a header, side information or main data cut short. The decoder treats it
+// as the end of the audio.
+type UnexpectedEOFError struct {
+	At string
+}
+
+func (u *UnexpectedEOFError) Error() string {
+	return "mp3: unexpected EOF at " + u.At
+}
+
+// Version is the MPEG audio version field of a frame header.
+type Version int
+
+const (
+	Version2_5      Version = 0
+	VersionReserved Version = 1
+	Version2        Version = 2
+	Version1        Version = 3
+)
+
+// Layer is the layer field of a frame header.
+type Layer int
+
+const (
+	LayerReserved Layer = 0
+	Layer3        Layer = 1
+	Layer2        Layer = 2
+	Layer1        Layer = 3
+)
+
+// Mode is the channel mode field of a frame header.
+type Mode int
+
+const (
+	ModeStereo        Mode = 0
+	ModeJointStereo   Mode = 1
+	ModeDualChannel   Mode = 2
+	ModeSingleChannel Mode = 3
+)
+
+// SamplingFrequency is the sampling frequency index field of a frame header:
+// 0, 1, 2 select 44.1, 48 and 32 kHz for MPEG-1, halved for MPEG-2 and
+// quartered for MPEG-2.5.
+type SamplingFrequency int
+
+const SamplingFrequencyReserved SamplingFrequency = 3
+
+const (
+	// SamplesPerGranule is the number of frequency lines, and PCM samples per
+	// channel, one granule decodes to.
+	SamplesPerGranule = 576
+	granulesMpeg1     = 2
+)
+
+// A FrameHeader is the 32-bit MPEG audio frame header.
 type FrameHeader uint32
 
 // ID returns this header's ID stored in position 20,19
-func (f FrameHeader) ID() consts.Version {
-	return consts.Version((f & 0x00180000) >> 19)
+func (f FrameHeader) ID() Version {
+	return Version((f & 0x00180000) >> 19)
 }
 
 // Layer returns the mpeg layer of this frame stored in position 18,17
-func (f FrameHeader) Layer() consts.Layer {
-	return consts.Layer((f & 0x00060000) >> 17)
+func (f FrameHeader) Layer() Layer {
+	return Layer((f & 0x00060000) >> 17)
 }
 
 // ProtectionBit returns the protection bit stored in position 16
@@ -47,8 +100,8 @@ func (f FrameHeader) BitrateIndex() int {
 }
 
 // SamplingFrequency returns the SamplingFrequency in Hz stored in position 11,10
-func (f FrameHeader) SamplingFrequency() consts.SamplingFrequency {
-	return consts.SamplingFrequency(int(f&0x00000c00) >> 10)
+func (f FrameHeader) SamplingFrequency() SamplingFrequency {
+	return SamplingFrequency(int(f&0x00000c00) >> 10)
 }
 
 func (f FrameHeader) SamplingFrequencyValue() (int, error) {
@@ -61,7 +114,7 @@ func (f FrameHeader) SamplingFrequencyValue() (int, error) {
 		return 48000 >> lsf, nil
 	case 2:
 		return 32000 >> lsf, nil
-	case consts.SamplingFrequencyReserved:
+	case SamplingFrequencyReserved:
 		return 0, errors.New("mp3: frame header has invalid sample frequency")
 	}
 	return 0, errors.New("mp3: frame header has invalid sample frequency")
@@ -79,8 +132,8 @@ func (f FrameHeader) PrivateBit() int {
 }
 
 // Mode returns the channel mode, stored in position 7,6
-func (f FrameHeader) Mode() consts.Mode {
-	return consts.Mode((f & 0x000000c0) >> 6)
+func (f FrameHeader) Mode() Mode {
+	return Mode((f & 0x000000c0) >> 6)
 }
 
 // modeExtension returns the mode_extension - for use with Joint Stereo - stored in position 4,5
@@ -90,7 +143,7 @@ func (f FrameHeader) modeExtension() int {
 
 // UseMSStereo returns a boolean value indicating whether the frame uses middle/side stereo.
 func (f FrameHeader) UseMSStereo() bool {
-	if f.Mode() != consts.ModeJointStereo {
+	if f.Mode() != ModeJointStereo {
 		return false
 	}
 	return f.modeExtension()&0x2 != 0
@@ -98,7 +151,7 @@ func (f FrameHeader) UseMSStereo() bool {
 
 // UseIntensityStereo returns a boolean value indicating whether the frame uses intensity stereo.
 func (f FrameHeader) UseIntensityStereo() bool {
-	if f.Mode() != consts.ModeJointStereo {
+	if f.Mode() != ModeJointStereo {
 		return false
 	}
 	return f.modeExtension()&0x1 != 0
@@ -121,26 +174,26 @@ func (f FrameHeader) Emphasis() int {
 
 // LowSamplingFrequency returns whether the frame is encoded in a low sampling frequency => 0 = MPEG-1, 1 = MPEG-2/2.5
 func (f FrameHeader) LowSamplingFrequency() int {
-	if f.ID() == consts.Version1 {
+	if f.ID() == Version1 {
 		return 0
 	}
 	return 1
 }
 
 func (f FrameHeader) BytesPerFrame() int {
-	return consts.SamplesPerGr * f.Granules() * 4
+	return SamplesPerGranule * f.Granules() * 4
 }
 
 func (f FrameHeader) Granules() int {
 	//nolint:gosec // LowSamplingFrequency returns 0 or 1, safe for uint conversion
-	return consts.GranulesMpeg1 >> uint(f.LowSamplingFrequency()) // MPEG2 uses only 1 granule
+	return granulesMpeg1 >> uint(f.LowSamplingFrequency()) // MPEG2 uses only 1 granule
 }
 
 // SamplesPerFrame returns the number of samples per frame.
 // For MPEG1 Layer 3: 1152 samples (576 * 2 granules)
 // For MPEG2/2.5 Layer 3: 576 samples (576 * 1 granule)
 func (f FrameHeader) SamplesPerFrame() int {
-	return consts.SamplesPerGr * f.Granules()
+	return SamplesPerGranule * f.Granules()
 }
 
 // FrameDuration returns the duration of a single frame.
@@ -170,16 +223,16 @@ func (f FrameHeader) IsValid() bool {
 	if (f & sync) != sync {
 		return false
 	}
-	if f.ID() == consts.VersionReserved {
+	if f.ID() == VersionReserved {
 		return false
 	}
 	if f.BitrateIndex() == 15 {
 		return false
 	}
-	if f.SamplingFrequency() == consts.SamplingFrequencyReserved {
+	if f.SamplingFrequency() == SamplingFrequencyReserved {
 		return false
 	}
-	if f.Layer() != consts.Layer3 {
+	if f.Layer() != Layer3 {
 		return false
 	}
 	if f.Emphasis() == 2 {
@@ -232,7 +285,7 @@ func (f FrameHeader) FrameSize() (int, error) {
 }
 
 func (f FrameHeader) SideInfoSize() int {
-	mono := f.Mode() == consts.ModeSingleChannel
+	mono := f.Mode() == ModeSingleChannel
 	var sideinfoSize int
 	if f.LowSamplingFrequency() == 1 {
 		if mono {
@@ -251,7 +304,7 @@ func (f FrameHeader) SideInfoSize() int {
 }
 
 func (f FrameHeader) NumberOfChannels() int {
-	if f.Mode() == consts.ModeSingleChannel {
+	if f.Mode() == ModeSingleChannel {
 		return 1
 	}
 	return 2
@@ -284,7 +337,7 @@ func Read(source FullReader, position int64) (h FrameHeader, startPosition int64
 				// Expected EOF
 				return 0, 0, io.EOF
 			}
-			return 0, 0, &consts.UnexpectedEOFError{At: "readHeader (1)"}
+			return 0, 0, &UnexpectedEOFError{At: "readHeader (1)"}
 		}
 		return 0, 0, err
 	}
@@ -307,7 +360,7 @@ func Read(source FullReader, position int64) (h FrameHeader, startPosition int64
 		buf := make([]byte, 1)
 		if _, err := source.ReadFull(buf); err != nil {
 			if errors.Is(err, io.EOF) {
-				return 0, 0, &consts.UnexpectedEOFError{At: "readHeader (2)"}
+				return 0, 0, &UnexpectedEOFError{At: "readHeader (2)"}
 			}
 			return 0, 0, err
 		}

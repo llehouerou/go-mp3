@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/llehouerou/go-mp3/internal/consts"
 	"github.com/llehouerou/go-mp3/internal/frameheader"
 	"github.com/llehouerou/go-mp3/internal/granule"
 	"github.com/llehouerou/go-mp3/internal/imdct"
@@ -60,11 +59,11 @@ type FullReader interface {
 
 // Read parses the frame whose header h was just read from source into f.
 func (f *Frame) Read(source FullReader, h frameheader.FrameHeader) error {
-	if h.ID() == consts.Version2_5 {
+	if h.ID() == frameheader.Version2_5 {
 		return errors.New("mp3: MPEG version 2.5 is not supported")
 	}
-	if h.Layer() != consts.Layer3 {
-		return fmt.Errorf("mp3: only layer3 (want %d; got %d) is supported", consts.Layer3, h.Layer())
+	if h.Layer() != frameheader.Layer3 {
+		return fmt.Errorf("mp3: only layer3 (want %d; got %d) is supported", frameheader.Layer3, h.Layer())
 	}
 	f.header = h
 	return f.g.Read(source, h)
@@ -93,7 +92,7 @@ func (f *Frame) Decode(out []byte) {
 		for ch := range nch {
 			antialias(&g[ch])
 			f.hybridSynthesis(&g[ch], ch)
-			f.subbandSynthesis(&g[ch], ch, out[consts.SamplesPerGr*4*gr:])
+			f.subbandSynthesis(&g[ch], ch, out[frameheader.SamplesPerGranule*4*gr:])
 		}
 	}
 }
@@ -148,7 +147,7 @@ func (f *Frame) reorder(c *granule.Channel) {
 	if !c.ShortBlocks {
 		return
 	}
-	re := make([]float32, consts.SamplesPerGr)
+	re := make([]float32, frameheader.SamplesPerGranule)
 	short := f.g.Short
 	is := &c.Lines
 
@@ -163,7 +162,7 @@ func (f *Frame) reorder(c *granule.Channel) {
 	if sfb == 0 {
 		i = 0
 	}
-	for i < consts.SamplesPerGr {
+	for i < frameheader.SamplesPerGranule {
 		if i == nextSfb {
 			j := 3 * short[sfb]
 			copy(is[j:j+3*winLen], re[0:3*winLen])

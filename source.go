@@ -19,7 +19,6 @@ import (
 	"errors"
 	"io"
 
-	"github.com/llehouerou/go-mp3/internal/consts"
 	"github.com/llehouerou/go-mp3/internal/frameheader"
 )
 
@@ -128,7 +127,7 @@ func (s *source) nextFrame() (h frameheader.FrameHeader, start int64, err error)
 // endOfAudio folds every error that means "no more audio" into io.EOF and
 // leaves any other error alone.
 func endOfAudio(err error) error {
-	var truncated *consts.UnexpectedEOFError
+	var truncated *frameheader.UnexpectedEOFError
 	var noSync *frameheader.SyncSearchLimitError
 	if errors.As(err, &truncated) || errors.As(err, &noSync) {
 		return io.EOF

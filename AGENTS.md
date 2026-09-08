@@ -36,8 +36,7 @@ make coverage PKG=./internal/bits
 - `decode.go`, `source.go`, `trim.go` - Main public API (Decoder type), the
   buffered source and frame walk, gapless trimming
 - `internal/` - Internal packages:
-  - `bits/` - Bit-level reading utilities and the bit reservoir
-  - `consts/` - Constants and lookup tables
+  - `bits/` - Bit-level reading
   - `frame/` - The DSP stages: requantize, reorder, stereo, antialias, IMDCT
     overlap-add, polyphase synthesis
   - `frameheader/` - Frame header parsing
