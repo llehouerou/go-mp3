@@ -22,7 +22,10 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
+
+	"github.com/llehouerou/go-mp3/internal/testaudio"
 )
 
 // ISO/IEC 11172-4 compliance thresholds (relative to full scale ±1.0)
@@ -276,14 +279,22 @@ func TestComplianceAgainstMpg123(t *testing.T) {
 		t.Skip("mpg123 not found, skipping compliance test")
 	}
 
+	// The synthesised real-audio file is the one TestDecodeGolden pins a hash
+	// of; checking it here is what makes re-pinning that hash a measured
+	// decision rather than a guess.
+	golden := filepath.Join(t.TempDir(), "golden.mp3")
+	if err := os.WriteFile(golden, testaudio.Build(testaudio.Options{Frames: 64, RealAudio: true}), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	testFiles := []string{
+		golden,
 		"example/classic.mp3",
 		"example/classic_lame.mp3",
 		"example/mpeg2.mp3",
 	}
 
 	for _, file := range testFiles {
-		t.Run(file, func(t *testing.T) {
+		t.Run(filepath.Base(file), func(t *testing.T) {
 			if _, err := os.Stat(file); os.IsNotExist(err) {
 				t.Skipf("test file not found: %s", file)
 			}

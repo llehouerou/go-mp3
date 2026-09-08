@@ -1,13 +1,15 @@
 // Package testaudio synthesises MP3 files for tests.
 //
 // Files are built frame by frame from real headers, so the decoder parses them
-// exactly as it parses encoder output. Audio payloads are zero-filled: the
-// point is the frame structure, not the sound.
+// exactly as it parses encoder output. Audio payloads are zero-filled unless
+// RealAudio is set: the point is usually the frame structure, not the sound.
 package testaudio
 
 import (
+	_ "embed"
 	"encoding/binary"
 	"fmt"
+	"sync"
 
 	"github.com/llehouerou/go-mp3/internal/consts"
 	"github.com/llehouerou/go-mp3/internal/frameheader"
@@ -40,6 +42,11 @@ type Options struct {
 	// BitratesKbps is cycled over the audio frames. A single entry means CBR,
 	// several mean VBR. Empty means 128 kbps (64 for MPEG2/2.5).
 	BitratesKbps []int
+	// RealAudio uses frames lifted from a LAME-encoded file (MPEG1, 44.1 kHz,
+	// joint stereo, VBR) as the audio frames, cycled when Frames exceeds the
+	// fixture, so the whole decoder runs on real Huffman data. Version, Mono,
+	// SampleRateIndex and BitratesKbps must be left at their defaults.
+	RealAudio bool
 
 	// XingMode selects the VBR header frame prepended to the audio frames.
 	XingMode XingMode
@@ -80,6 +87,10 @@ func Build(o Options) []byte {
 	}
 
 	for i := range o.Frames {
+		if o.RealAudio {
+			out = append(out, o.realFrame(i)...)
+			continue
+		}
 		h := header(version, o.Mono, o.SampleRateIndex, bitrates[i%len(bitrates)], false)
 		out = append(out, frame(h, nil)...)
 	}
@@ -103,6 +114,32 @@ func Build(o Options) []byte {
 		out = out[:len(out)-o.TruncateBytes]
 	}
 	return out
+}
+
+//go:embed testdata/frames.bin
+var realFramesBlob []byte
+
+// realFrames splits the embedded fixture into frames once, on first use.
+var realFrames = sync.OnceValue(func() [][]byte {
+	var frames [][]byte
+	for b := realFramesBlob; len(b) > 0; {
+		size, err := frameheader.FrameHeader(binary.BigEndian.Uint32(b)).FrameSize()
+		if err != nil {
+			panic(err)
+		}
+		frames = append(frames, b[:size])
+		b = b[size:]
+	}
+	return frames
+})
+
+// realFrame returns the i-th lifted frame, cycling through the fixture.
+func (o Options) realFrame(i int) []byte {
+	if o.Version > 1 || o.Mono || o.SampleRateIndex != 0 || len(o.BitratesKbps) > 0 {
+		panic("testaudio: RealAudio fixes the format; leave Version, Mono, SampleRateIndex and BitratesKbps at their defaults")
+	}
+	frames := realFrames()
+	return frames[i%len(frames)]
 }
 
 // resolve fills in the defaults: MPEG1, and a bitrate typical of the version.

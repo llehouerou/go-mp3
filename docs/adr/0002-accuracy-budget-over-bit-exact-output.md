@@ -38,6 +38,12 @@ ADR writes down the contract that was already in force, and pins it.
   must reproduce it to ~1e-5 relative. It runs everywhere, in milliseconds.
 - Downstream users cannot golden-hash decoder output across upgrades. README
   states this.
+- The project itself does keep one golden hash, `golden_test.go`, over a
+  synthesised file carrying real LAME frames (`internal/testaudio/testdata`).
+  It is a tripwire, not a contract: it covers requantize/reorder/stereo/
+  antialias on every machine, which the mpg123 comparison cannot, and a change
+  that legitimately moves the last bits re-pins it. The mpg123 compliance test
+  runs on the same synthesised file, so re-pinning is a measured decision.
 - Full ISO compliance (RMS < 0.289) remains unreached and out of scope here; the
   residual error predates this change and comes from float32 precision through
   the whole pipeline, not from the synthesis matrixing.
