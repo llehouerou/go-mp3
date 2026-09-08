@@ -33,16 +33,19 @@ make coverage PKG=./internal/bits
 
 ## Project Structure
 
-- `decode.go`, `source.go` - Main public API (Decoder type)
+- `decode.go`, `source.go`, `trim.go` - Main public API (Decoder type), the
+  buffered source and frame walk, gapless trimming
 - `internal/` - Internal packages:
-  - `bits/` - Bit-level reading utilities
+  - `bits/` - Bit-level reading utilities and the bit reservoir
   - `consts/` - Constants and lookup tables
-  - `frame/` - MP3 frame decoding
+  - `frame/` - The DSP stages: requantize, reorder, stereo, antialias, IMDCT
+    overlap-add, polyphase synthesis
   - `frameheader/` - Frame header parsing
+  - `granule/` - Bitstream to granules: side info, reservoir, scalefactors,
+    Huffman, requantization gains
   - `huffman/` - Huffman decoding tables
   - `imdct/` - Inverse modified discrete cosine transform
-  - `maindata/` - Main audio data and scale factors
-  - `sideinfo/` - Side information parsing
+  - `testaudio/` - Synthesised MP3 files for tests, with optional real frames
 - `example/` - Example usage with oto audio library
 
 ## Agent skills

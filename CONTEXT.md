@@ -11,6 +11,19 @@ The unit an MP3 file is built from: a header plus its compressed audio, always
 decoding to the same number of PCM bytes for a given sample rate.
 _Avoid_: block, chunk, packet
 
+**Granule**:
+The unit the audio inside a frame is coded in: 576 frequency lines per
+channel, two per frame in MPEG-1 and one in MPEG-2. `granule.Reader` turns a
+frame's bitstream into finished granules; the DSP stages in `frame` consume
+them one at a time.
+_Avoid_: sub-frame, half-frame
+
+**Bit reservoir**:
+The bytes of earlier frames a frame's main data may begin in, pointed to by
+`main_data_begin`. It is the only decoder state that a frame depends on
+besides the synthesis history, and the reason a seek pre-rolls one frame.
+_Avoid_: back-buffer, main data buffer
+
 **Frame index**:
 The mapping from frame number to byte offset in the source, held in
 `frameStarts`. Needed only to seek; playback never consults it.
