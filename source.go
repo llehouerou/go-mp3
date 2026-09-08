@@ -125,8 +125,12 @@ func (s *source) nextFrame() (h frameheader.FrameHeader, start int64, err error)
 }
 
 // endOfAudio folds every error that means "no more audio" into io.EOF and
-// leaves any other error alone.
+// leaves any other error alone. The nil check is not just a shortcut: the
+// errors.As targets escape to the heap, and this runs once per frame.
 func endOfAudio(err error) error {
+	if err == nil {
+		return nil
+	}
 	var truncated *frameheader.UnexpectedEOFError
 	var noSync *frameheader.SyncSearchLimitError
 	if errors.As(err, &truncated) || errors.As(err, &noSync) {
