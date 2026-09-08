@@ -279,6 +279,39 @@ func TestUnderReportingXingFrameCount(t *testing.T) {
 	}
 }
 
+// TestSeekPastAudio covers a Xing count that over-promises by too little for
+// the floor check to catch. The index is the authority on what exists: a seek
+// past the last real frame yields no audio, and a seek inside the audio still
+// yields exactly what a play-through would from that point.
+func TestSeekPastAudio(t *testing.T) {
+	opts := testaudio.Options{Frames: 20, XingMode: testaudio.Xing, XingFrameCount: 25}
+	data := testaudio.Build(opts)
+	const bytesPerFrame = 4608
+
+	straight, err := io.ReadAll(open(t, data))
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if want := 21 * bytesPerFrame; len(straight) != want {
+		t.Fatalf("play-through decoded %d bytes, want %d", len(straight), want)
+	}
+
+	for _, off := range []int64{19*bytesPerFrame + 100, 22 * bytesPerFrame} {
+		d := open(t, data)
+		if _, err := d.Seek(off, io.SeekStart); err != nil {
+			t.Fatalf("Seek(%d): %v", off, err)
+		}
+		got, err := io.ReadAll(d)
+		if err != nil {
+			t.Fatalf("ReadAll after Seek(%d): %v", off, err)
+		}
+		want := straight[min(off, int64(len(straight))):]
+		if !bytes.Equal(got, want) {
+			t.Errorf("Seek(%d): decoded %d bytes, want %d", off, len(got), len(want))
+		}
+	}
+}
+
 // TestNonSeekableSource covers a stream: a Xing header needs no seeking, so the
 // length is known even though seeking is not possible. The two used to be the
 // same condition.

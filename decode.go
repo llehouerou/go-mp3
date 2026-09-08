@@ -181,40 +181,38 @@ func (d *Decoder) Seek(offset int64, whence int) (int64, error) {
 		return npos, nil
 	}
 
-	rawPos := d.trim.rawOf(npos)
-
 	if len(d.frameStarts) == 0 {
 		return 0, errors.New("mp3: no frames to seek to")
 	}
-	// A Xing header can promise more frames than the file holds, so the index
-	// is the authority on what exists.
-	f := min(rawPos/d.bytesPerFrame, int64(len(d.frameStarts)-1))
-	// If the frame is not first, read the previous ahead of reading that
-	// because the previous frame can affect the targeted frame.
-	if f > 0 {
-		f--
-		if _, err := d.source.Seek(d.frameStarts[f], 0); err != nil {
-			return 0, err
-		}
-		if err := d.readFrame(); err != nil {
-			return 0, err
-		}
-		if err := d.readFrame(); err != nil {
-			return 0, err
-		}
-		d.buf = d.buf[d.bytesPerFrame+(rawPos%d.bytesPerFrame):]
-	} else {
-		if _, err := d.source.Seek(d.frameStarts[0], 0); err != nil {
-			return 0, err
-		}
-		for int64(len(d.buf)) <= rawPos {
-			if err := d.readFrame(); err != nil {
-				return 0, err
-			}
-		}
-		d.buf = d.buf[rawPos:]
+	// Start one frame early so the bit reservoir the target frame points back
+	// into is there. The frame index is clamped because a Xing header can
+	// promise more frames than the file holds.
+	rawPos := d.trim.rawOf(npos)
+	start := max(min(rawPos/d.bytesPerFrame, int64(len(d.frameStarts)-1))-1, 0)
+	if _, err := d.source.Seek(d.frameStarts[start], io.SeekStart); err != nil {
+		return 0, err
+	}
+	if err := d.advance(rawPos - start*d.bytesPerFrame); err != nil {
+		return 0, err
 	}
 	return npos, nil
+}
+
+// advance decodes forward until the buffer covers lead raw bytes and drops
+// them. Running into EOF first leaves the buffer empty: the target lies past
+// the audio the file actually holds.
+func (d *Decoder) advance(lead int64) error {
+	for int64(len(d.buf)) < lead {
+		if err := d.readFrame(); err != nil {
+			if errors.Is(err, io.EOF) {
+				d.buf = nil
+				return nil
+			}
+			return err
+		}
+	}
+	d.buf = d.buf[lead:]
+	return nil
 }
 
 // SampleRate returns the sample rate like 44100.
@@ -547,7 +545,9 @@ func NewDecoderWithOptions(r io.Reader, opts DecoderOptions) (*Decoder, error) {
 		// Discard the Xing frame's decoded samples, then the encoder delay.
 		d.buf = nil
 		d.pos = 0
-		d.skipInitialSamples()
+		if err := d.advance(d.trim.start - d.bytesPerFrame); err != nil {
+			return nil, err
+		}
 	}
 	if err := d.applyXingLength(info); err != nil {
 		return nil, err
@@ -607,25 +607,4 @@ func (d *Decoder) frameCountIsCredible(info *lameinfo.Info) bool {
 	}
 	minFrameBytes := samplesPerFrame / 8 * minBitrate / int64(d.sampleRate)
 	return audioBytes >= (int64(info.FrameCount)+1)*minFrameBytes
-}
-
-// skipInitialSamples reads and discards the head of the raw stream that gapless
-// trimming removes. The Xing frame is already discarded by setting d.buf = nil
-// before calling this function, so only the encoder delay is left to skip.
-func (d *Decoder) skipInitialSamples() {
-	remaining := d.trim.start - d.bytesPerFrame
-	for remaining > 0 {
-		if len(d.buf) == 0 {
-			if err := d.readFrame(); err != nil {
-				return
-			}
-		}
-		if int64(len(d.buf)) <= remaining {
-			remaining -= int64(len(d.buf))
-			d.buf = nil
-		} else {
-			d.buf = d.buf[remaining:]
-			remaining = 0
-		}
-	}
 }
