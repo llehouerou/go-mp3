@@ -110,3 +110,16 @@ func TestBits(t *testing.T) {
 		t.Fail()
 	}
 }
+
+func TestShiftGrow(t *testing.T) {
+	b := bits.New([]byte{1, 2, 3, 4})
+	b.Bits(20)
+	b.Shift(2) // keep {3, 4}, rewind
+	copy(b.Grow(2), []byte{5, 6})
+	if b.LenInBytes() != 4 || b.BitPos() != 0 || b.Err() != nil {
+		t.Fatalf("len=%d pos=%d err=%v", b.LenInBytes(), b.BitPos(), b.Err())
+	}
+	if got := b.Bits(32); got != 0x03040506 {
+		t.Fatalf("got %#x", got)
+	}
+}

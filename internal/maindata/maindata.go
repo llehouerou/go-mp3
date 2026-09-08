@@ -80,17 +80,17 @@ func initSlen() (nSlen2 [512]int) {
 	return
 }
 
-// Read reads main data from the source and decodes scale factors.
-// If reuse is non-nil, it will be reused instead of allocating a new MainData.
-func Read(source FullReader, prev *bits.Bits, header frameheader.FrameHeader, sideInfo *sideinfo.SideInfo, reuse *MainData) (*MainData, *bits.Bits, error) {
-	nch := header.NumberOfChannels()
+// Read appends this frame's main data to the bit reservoir m, keeping the
+// main_data_begin bytes of earlier frames it points back into, and decodes the
+// scale factors and Huffman data into md.
+func Read(source FullReader, header frameheader.FrameHeader, sideInfo *sideinfo.SideInfo, md *MainData, m *bits.Bits) error {
 	// Calculate header audio data size
 	framesize, err := header.FrameSize()
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 	if framesize > 2000 {
-		return nil, nil, fmt.Errorf("mp3: framesize = %d", framesize)
+		return fmt.Errorf("mp3: framesize = %d", framesize)
 	}
 	sideinfoSize := header.SideInfoSize()
 
@@ -100,34 +100,21 @@ func Read(source FullReader, prev *bits.Bits, header frameheader.FrameHeader, si
 	if header.ProtectionBit() == 0 {
 		mainDataSize -= 2
 	}
-	// Assemble main data buffer with data from this frame and the previous
-	// two frames. main_data_begin indicates how many bytes from previous
-	// frames that should be used. This buffer is later accessed by the
-	// Bits function in the same way as the side info is.
-	m, err := read(source, prev, mainDataSize, sideInfo.MainDataBegin)
-	if err != nil {
-		// This could be due to not enough data in reservoir
-		return nil, nil, err
+	if err := read(source, m, mainDataSize, sideInfo.MainDataBegin); err != nil {
+		return err
 	}
 
+	// Zero scale factors; Is array will be fully overwritten by readHuffman
+	md.ScalefacL = [2][2][22]int{}
+	md.ScalefacS = [2][2][13][3]int{}
 	if header.LowSamplingFrequency() == 1 {
-		return getScaleFactorsMpeg2(m, header, sideInfo, reuse)
+		return getScaleFactorsMpeg2(m, header, sideInfo, md)
 	}
-	return getScaleFactorsMpeg1(nch, m, header, sideInfo, reuse)
+	return getScaleFactorsMpeg1(m, header, sideInfo, md)
 }
 
-func getScaleFactorsMpeg2(m *bits.Bits, header frameheader.FrameHeader, sideInfo *sideinfo.SideInfo, reuse *MainData) (*MainData, *bits.Bits, error) {
+func getScaleFactorsMpeg2(m *bits.Bits, header frameheader.FrameHeader, sideInfo *sideinfo.SideInfo, md *MainData) error {
 	nch := header.NumberOfChannels()
-
-	var md *MainData
-	if reuse != nil {
-		md = reuse
-		// Zero scale factors; Is array will be fully overwritten by readHuffman
-		md.ScalefacL = [2][2][22]int{}
-		md.ScalefacS = [2][2][13][3]int{}
-	} else {
-		md = &MainData{}
-	}
 
 	for ch := range nch {
 		part2Start := m.BitPos()
@@ -180,23 +167,15 @@ func getScaleFactorsMpeg2(m *bits.Bits, header frameheader.FrameHeader, sideInfo
 
 		// Read Huffman coded data. Skip stuffing bits.
 		if err := readHuffman(m, header, sideInfo, md, part2Start, 0, ch); err != nil {
-			return nil, nil, err
+			return err
 		}
 	}
 	// The ancillary data is stored here,but we ignore it.
-	return md, m, nil
+	return nil
 }
 
-func getScaleFactorsMpeg1(nch int, m *bits.Bits, header frameheader.FrameHeader, sideInfo *sideinfo.SideInfo, reuse *MainData) (*MainData, *bits.Bits, error) {
-	var md *MainData
-	if reuse != nil {
-		md = reuse
-		// Zero scale factors; Is array will be fully overwritten by readHuffman
-		md.ScalefacL = [2][2][22]int{}
-		md.ScalefacS = [2][2][13][3]int{}
-	} else {
-		md = &MainData{}
-	}
+func getScaleFactorsMpeg1(m *bits.Bits, header frameheader.FrameHeader, sideInfo *sideinfo.SideInfo, md *MainData) error {
+	nch := header.NumberOfChannels()
 	for gr := range 2 {
 		for ch := range nch {
 			part2Start := m.BitPos()
@@ -279,45 +258,29 @@ func getScaleFactorsMpeg1(nch int, m *bits.Bits, header frameheader.FrameHeader,
 			}
 			// Read Huffman coded data. Skip stuffing bits.
 			if err := readHuffman(m, header, sideInfo, md, part2Start, gr, ch); err != nil {
-				return nil, nil, err
+				return err
 			}
 		}
 	}
 	// The ancillary data is stored here,but we ignore it.
-	return md, m, nil
+	return nil
 }
 
-func read(source FullReader, prev *bits.Bits, size, offset int) (*bits.Bits, error) {
+func read(source FullReader, m *bits.Bits, size, offset int) error {
 	if size > 1500 {
-		return nil, fmt.Errorf("mp3: size = %d", size)
+		return fmt.Errorf("mp3: size = %d", size)
 	}
-	// Check that there's data available from previous frames if needed
-	if prev != nil && offset > prev.LenInBytes() {
-		// No, there is not, so we skip decoding this frame, but we have to
-		// read the main_data bits from the bitstream in case they are needed
-		// for decoding the next frame.
-		buf := make([]byte, size)
-		if n, err := source.ReadFull(buf); n < size {
-			if errors.Is(err, io.EOF) {
-				return nil, &consts.UnexpectedEOFError{At: "maindata.Read (1)"}
-			}
-			return nil, err
-		}
-		// TODO: Define a special error and enable to continue the next frame.
-		return bits.Append(prev, buf), nil
-	}
-	// Copy data from previous frames
-	vec := []byte{}
-	if prev != nil {
-		vec = prev.Tail(offset)
-	}
-	// Read the main_data from file
-	buf := make([]byte, size)
-	if n, err := source.ReadFull(buf); n < size {
+	// Keep the offset bytes of earlier frames this frame points back into. When
+	// the reservoir holds fewer (a stream joined mid-way), everything it has is
+	// kept and the frame decodes from that; the bits are still read so the next
+	// frame can use them.
+	// TODO: Define a special error and enable to continue the next frame.
+	m.Shift(min(offset, m.LenInBytes()))
+	if n, err := source.ReadFull(m.Grow(size)); n < size {
 		if errors.Is(err, io.EOF) {
-			return nil, &consts.UnexpectedEOFError{At: "maindata.Read (2)"}
+			return &consts.UnexpectedEOFError{At: "maindata.Read"}
 		}
-		return nil, err
+		return err
 	}
-	return bits.New(append(vec, buf...)), nil
+	return nil
 }

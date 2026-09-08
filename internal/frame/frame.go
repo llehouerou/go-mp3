@@ -56,17 +56,28 @@ func init() {
 	}
 }
 
+// A Frame is the decoder state for one stream: the frame most recently read
+// and the history that carries between frames. Read replaces the former in
+// place, so one Frame serves a whole stream.
 type Frame struct {
 	header   frameheader.FrameHeader
-	sideInfo *sideinfo.SideInfo
-	mainData *maindata.MainData
+	sideInfo sideinfo.SideInfo
+	mainData maindata.MainData
 
-	mainDataBits *bits.Bits
+	// mainDataBits is the bit reservoir: this frame's main data behind the
+	// tail of the previous frames' that main_data_begin points back into.
+	mainDataBits bits.Bits
 	store        [2][32][18]float32
 	// vVec is the polyphase synthesis history, used as a circular buffer:
 	// vOff[ch] is where its logical index 0 currently sits.
 	vVec [2][1024]float32
 	vOff [2]int
+}
+
+// Reset forgets the reservoir and the synthesis history, for decoding from
+// somewhere else in the stream.
+func (f *Frame) Reset() {
+	*f = Frame{}
 }
 
 type FullReader interface {
@@ -84,55 +95,35 @@ func readCRC(source FullReader) error {
 	return nil
 }
 
-func Read(source FullReader, position int64, prev *Frame) (frame *Frame, startPosition int64, err error) {
+// Read parses the next frame from source into f. position is where source
+// currently sits; startPosition is where the frame's header was found.
+func (f *Frame) Read(source FullReader, position int64) (startPosition int64, err error) {
 	h, pos, err := frameheader.Read(source, position)
 	if err != nil {
-		return nil, 0, err
+		return 0, err
 	}
 
 	if h.ProtectionBit() == 0 {
 		if err := readCRC(source); err != nil {
-			return nil, 0, err
+			return 0, err
 		}
 	}
 
 	if h.ID() == consts.Version2_5 {
-		return nil, 0, errors.New("mp3: MPEG version 2.5 is not supported")
+		return 0, errors.New("mp3: MPEG version 2.5 is not supported")
 	}
 	if h.Layer() != consts.Layer3 {
-		return nil, 0, fmt.Errorf("mp3: only layer3 (want %d; got %d) is supported", consts.Layer3, h.Layer())
+		return 0, fmt.Errorf("mp3: only layer3 (want %d; got %d) is supported", consts.Layer3, h.Layer())
 	}
 
-	si, err := sideinfo.Read(source, h)
-	if err != nil {
-		return nil, 0, err
+	f.header = h
+	if err := sideinfo.Read(source, h, &f.sideInfo); err != nil {
+		return 0, err
 	}
-
-	// If there's not enough main data in the bit reservoir,
-	// signal to calling function so that decoding isn't done!
-	// Get main data (scalefactors and Huffman coded frequency data)
-	var prevM *bits.Bits
-	var reuseMainData *maindata.MainData
-	if prev != nil {
-		prevM = prev.mainDataBits
-		reuseMainData = prev.mainData
+	if err := maindata.Read(source, h, &f.sideInfo, &f.mainData, &f.mainDataBits); err != nil {
+		return 0, err
 	}
-	md, mdb, err := maindata.Read(source, prevM, h, si, reuseMainData)
-	if err != nil {
-		return nil, 0, err
-	}
-	nf := &Frame{
-		header:       h,
-		sideInfo:     si,
-		mainData:     md,
-		mainDataBits: mdb,
-	}
-	if prev != nil {
-		nf.store = prev.store
-		nf.vVec = prev.vVec
-		nf.vOff = prev.vOff
-	}
-	return nf, pos, nil
+	return pos, nil
 }
 
 func (f *Frame) SamplingFrequency() (int, error) {
@@ -144,8 +135,9 @@ func (f *Frame) BytesPerFrame() int {
 	return f.header.BytesPerFrame()
 }
 
-func (f *Frame) Decode() []byte {
-	out := make([]byte, f.header.BytesPerFrame())
+// Decode writes the frame's PCM into out, which must hold BytesPerFrame bytes.
+func (f *Frame) Decode(out []byte) {
+	out = out[:f.header.BytesPerFrame()]
 	nch := f.header.NumberOfChannels()
 	for gr := range f.header.Granules() {
 		for ch := range nch {
@@ -160,7 +152,6 @@ func (f *Frame) Decode() []byte {
 			f.subbandSynthesis(gr, ch, out[consts.SamplesPerGr*4*gr:])
 		}
 	}
-	return out
 }
 
 func (f *Frame) requantizeProcessLong(gr, ch, isPos, sfb int) {
@@ -641,8 +632,7 @@ var synthDtbl = [512]float32{
 }
 
 func (f *Frame) subbandSynthesis(gr, ch int, out []byte) {
-	// Scratch, kept local: Frame is heap-allocated per frame, so hanging this
-	// off it would cost an allocation and a copy per frame instead of saving one.
+	// Scratch for the 32 subband samples of one time slot.
 	var sVec [32]float32
 
 	v := &f.vVec[ch]
