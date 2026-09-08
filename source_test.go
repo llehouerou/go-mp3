@@ -2,9 +2,53 @@ package mp3
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"testing"
+
+	"github.com/llehouerou/go-mp3/internal/testaudio"
 )
+
+// TestSourceNextFrame pins the end-of-audio policy at the one seam that owns
+// it: a frame header is found wherever it sits, and anything that means "no
+// more audio" is reported as io.EOF, whatever shape it takes underneath: the
+// source running out, a header cut short, or a stretch of trailing tags or
+// garbage longer than the sync search tolerates.
+func TestSourceNextFrame(t *testing.T) {
+	frame := testaudio.Build(testaudio.Options{Frames: 1})
+	junk := make([]byte, 5000)
+
+	tests := []struct {
+		name  string
+		data  []byte
+		start int64
+		eof   bool
+	}{
+		{"frame at the start", frame, 0, false},
+		{"frame after junk", append(append([]byte{}, junk...), frame...), 5000, false},
+		{"empty", nil, 0, true},
+		{"header cut short", frame[:3], 0, true},
+		{"ID3v1 tag then nothing", append([]byte("TAG"), make([]byte, 125)...), 0, true},
+		{"garbage past the sync search limit", make([]byte, 70*1024), 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, start, err := newSource(bytes.NewReader(tt.data)).nextFrame()
+			if tt.eof {
+				if !errors.Is(err, io.EOF) {
+					t.Fatalf("err = %v, want io.EOF", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			if start != tt.start || !h.IsValid() {
+				t.Errorf("start = %d valid = %v, want start %d and a valid header", start, h.IsValid(), tt.start)
+			}
+		})
+	}
+}
 
 // TestSourcePositionTracksBytes pins the invariant the buffered seek relies on:
 // pos is the offset of the next byte a caller will get, whatever mix of reads,

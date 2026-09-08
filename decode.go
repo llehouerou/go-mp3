@@ -19,9 +19,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/llehouerou/go-mp3/internal/consts"
 	"github.com/llehouerou/go-mp3/internal/frame"
-	"github.com/llehouerou/go-mp3/internal/frameheader"
 	"github.com/llehouerou/go-mp3/lameinfo"
 )
 
@@ -82,24 +80,15 @@ type Decoder struct {
 // file carries a Xing/Info header.
 var ErrNotSeekable = errors.New("mp3: source is not seekable")
 
+// readFrame decodes the next frame onto the end of buf. A frame cut short by
+// the end of the source is the end of the audio, like a missing header.
 func (d *Decoder) readFrame() error {
-	_, err := d.frame.Read(d.source, d.source.pos)
+	h, _, err := d.source.nextFrame()
 	if err != nil {
-		if errors.Is(err, io.EOF) {
-			return io.EOF
-		}
-		var unexpectedEOF *consts.UnexpectedEOFError
-		if errors.As(err, &unexpectedEOF) {
-			// TODO: Log here?
-			return io.EOF
-		}
-		// If we can't find a valid frame header, we've likely hit
-		// trailing metadata (APE tags, ID3v1, etc.) - treat as end of audio
-		var syncLimitErr *frameheader.SyncSearchLimitError
-		if errors.As(err, &syncLimitErr) {
-			return io.EOF
-		}
 		return err
+	}
+	if err := d.frame.Read(d.source, h); err != nil {
+		return endOfAudio(err)
 	}
 	if len(d.buf) == 0 {
 		d.buf = d.pcm[:0]
@@ -264,25 +253,14 @@ func (d *Decoder) scan() error {
 	}
 	l := int64(0)
 	for {
-		h, pos, err := frameheader.Read(d.source, d.source.pos)
+		h, start, err := d.source.nextFrame()
+		if errors.Is(err, io.EOF) {
+			break
+		}
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			var unexpectedEOF *consts.UnexpectedEOFError
-			if errors.As(err, &unexpectedEOF) {
-				// TODO: Log here?
-				break
-			}
-			// If we can't find a valid frame header, we've likely hit
-			// trailing metadata (APE tags, ID3v1, etc.) - treat as end of audio
-			var syncLimitErr *frameheader.SyncSearchLimitError
-			if errors.As(err, &syncLimitErr) {
-				break
-			}
 			return err
 		}
-		d.frameStarts = append(d.frameStarts, pos)
+		d.frameStarts = append(d.frameStarts, start)
 		l += d.bytesPerFrame
 
 		framesize, err := h.FrameSize()

@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"testing"
+
+	"github.com/llehouerou/go-mp3/internal/frameheader"
 )
 
 type fullReader struct{ *bytes.Reader }
@@ -21,18 +23,22 @@ func benchFrame(b *testing.B) *Frame {
 	}
 	src := fullReader{bytes.NewReader(buf)}
 	f := &Frame{}
-	var pos int64
-	var out []byte
-	for range 40 {
-		if pos, err = f.Read(src, pos); err != nil {
+	read := func() {
+		h, _, err := frameheader.Read(src, 0)
+		if err != nil {
 			b.Fatal(err)
 		}
+		if err := f.Read(src, h); err != nil {
+			b.Fatal(err)
+		}
+	}
+	var out []byte
+	for range 40 {
+		read()
 		out = make([]byte, f.BytesPerFrame())
 		f.Decode(out)
 	}
-	if _, err = f.Read(src, pos); err != nil {
-		b.Fatal(err)
-	}
+	read()
 	return f
 }
 

@@ -95,35 +95,26 @@ func readCRC(source FullReader) error {
 	return nil
 }
 
-// Read parses the next frame from source into f. position is where source
-// currently sits; startPosition is where the frame's header was found.
-func (f *Frame) Read(source FullReader, position int64) (startPosition int64, err error) {
-	h, pos, err := frameheader.Read(source, position)
-	if err != nil {
-		return 0, err
-	}
-
+// Read parses the frame whose header h was just read from source into f.
+func (f *Frame) Read(source FullReader, h frameheader.FrameHeader) error {
 	if h.ProtectionBit() == 0 {
 		if err := readCRC(source); err != nil {
-			return 0, err
+			return err
 		}
 	}
 
 	if h.ID() == consts.Version2_5 {
-		return 0, errors.New("mp3: MPEG version 2.5 is not supported")
+		return errors.New("mp3: MPEG version 2.5 is not supported")
 	}
 	if h.Layer() != consts.Layer3 {
-		return 0, fmt.Errorf("mp3: only layer3 (want %d; got %d) is supported", consts.Layer3, h.Layer())
+		return fmt.Errorf("mp3: only layer3 (want %d; got %d) is supported", consts.Layer3, h.Layer())
 	}
 
 	f.header = h
 	if err := sideinfo.Read(source, h, &f.sideInfo); err != nil {
-		return 0, err
+		return err
 	}
-	if err := maindata.Read(source, h, &f.sideInfo, &f.mainData, &f.mainDataBits); err != nil {
-		return 0, err
-	}
-	return pos, nil
+	return maindata.Read(source, h, &f.sideInfo, &f.mainData, &f.mainDataBits)
 }
 
 func (f *Frame) SamplingFrequency() (int, error) {

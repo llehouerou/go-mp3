@@ -18,6 +18,9 @@ import (
 	"bufio"
 	"errors"
 	"io"
+
+	"github.com/llehouerou/go-mp3/internal/consts"
+	"github.com/llehouerou/go-mp3/internal/frameheader"
 )
 
 // sourceBufferSize is the block size reads are batched into. MP3 frames are a
@@ -111,6 +114,26 @@ func (s *source) Peek(n int) ([]byte, error) {
 		return rest, nil
 	}
 	return append(append([]byte{}, s.buf...), rest...), nil
+}
+
+// nextFrame finds the next frame header and reports where it starts, leaving
+// the source positioned just after it. The end of the audio is io.EOF, whatever
+// shape it takes underneath: the source running out, a header cut short, or a
+// stretch of trailing tags or garbage longer than the sync search tolerates.
+func (s *source) nextFrame() (h frameheader.FrameHeader, start int64, err error) {
+	h, start, err = frameheader.Read(s, s.pos)
+	return h, start, endOfAudio(err)
+}
+
+// endOfAudio folds every error that means "no more audio" into io.EOF and
+// leaves any other error alone.
+func endOfAudio(err error) error {
+	var truncated *consts.UnexpectedEOFError
+	var noSync *frameheader.SyncSearchLimitError
+	if errors.As(err, &truncated) || errors.As(err, &noSync) {
+		return io.EOF
+	}
+	return err
 }
 
 func (s *source) skipTags() error {
