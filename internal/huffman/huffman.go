@@ -345,43 +345,78 @@ var huffmanMain = [...]huffTables{
 	{huffmanTable[2773:], 31, 0},   // Table 33
 }
 
-func Decode(m *bits.Bits, tableNum int) (x, y, v, w int, err error) {
-	point := 0
-	decodeError := 1
-	bitsleft := 32
+// child returns the node reached from point by taking bit, following the
+// >= 250 offset chains the table uses for long jumps.
+func child(ht []uint16, point, bit int) int {
+	if bit != 0 {
+		for (ht[point] & 0xff) >= 250 {
+			point += int(ht[point]) & 0xff
+		}
+		return point + int(ht[point])&0xff
+	}
+	for (ht[point] >> 8) >= 250 {
+		point += int(ht[point]) >> 8
+	}
+	return point + int(ht[point])>>8
+}
+
+// lutBits is how many bits the lookup tables index on. Codewords up to that
+// long decode in one step; the rest walk the tree.
+const lutBits = 10
+
+// lut[table][next lutBits bits] holds the codeword length in its high byte and
+// the leaf value (x<<4 | y) in its low byte, or zero when the codeword is
+// longer than lutBits.
+var lut [len(huffmanMain)][1 << lutBits]uint16
+
+func init() {
+	for t, table := range &huffmanMain {
+		if table.treelen == 0 {
+			continue
+		}
+		for w := range lut[t] {
+			point := 0
+			for depth := 1; depth <= lutBits; depth++ {
+				point = child(table.hufftable, point, (w>>(lutBits-depth))&1)
+				if point >= table.treelen {
+					break
+				}
+				if table.hufftable[point]&0xff00 == 0 {
+					lut[t][w] = uint16(depth)<<8 | table.hufftable[point]&0xff //nolint:gosec // depth <= lutBits
+					break
+				}
+			}
+		}
+	}
+}
+
+// walk decodes one codeword bit by bit, for the codewords too long for lut.
+func walk(m *bits.Bits, tableNum int) (x, y int, err error) {
+	htptr := huffmanMain[tableNum].hufftable
 	treelen := huffmanMain[tableNum].treelen
+	point := 0
+	for bitsleft := 32; bitsleft > 0; bitsleft-- {
+		point = child(htptr, point, m.Bit())
+		if point >= treelen {
+			break
+		}
+		if htptr[point]&0xff00 == 0 {
+			return int(htptr[point]>>4) & 0xf, int(htptr[point]) & 0xf, nil
+		}
+	}
+	return 0, 0, fmt.Errorf("mp3: illegal Huff code in data, point = %d, tab = %d", point, tableNum)
+}
+
+func Decode(m *bits.Bits, tableNum int) (x, y, v, w int, err error) {
 	linbits := huffmanMain[tableNum].linbits
-	if treelen == 0 { // Check for empty tables
+	if huffmanMain[tableNum].treelen == 0 { // Check for empty tables
 		return 0, 0, 0, 0, nil
 	}
-	htptr := huffmanMain[tableNum].hufftable
-	for { // Start reading the Huffman code word,bit by bit
-		// Check if we've matched a code word
-		if (htptr[point] & 0xff00) == 0 {
-			decodeError = 0
-			x = int((htptr[point] >> 4) & 0xf)
-			y = int(htptr[point] & 0xf)
-			break
-		}
-		if m.Bit() != 0 { // Go right in tree
-			for (htptr[point] & 0xff) >= 250 {
-				point += int(htptr[point]) & 0xff
-			}
-			point += int(htptr[point]) & 0xff
-		} else { // Go left in tree
-			for (htptr[point] >> 8) >= 250 {
-				point += int(htptr[point]) >> 8
-			}
-			point += int(htptr[point]) >> 8
-		}
-		bitsleft--
-		if bitsleft <= 0 || point >= treelen {
-			break
-		}
-	}
-	if decodeError != 0 { // Check for error.
-		err := fmt.Errorf("mp3: illegal Huff code in data, bleft = %d, point = %d, tab = %d",
-			bitsleft, point, tableNum)
+	if e := lut[tableNum][m.Peek(lutBits)]; e != 0 {
+		m.Skip(int(e >> 8))
+		x = int(e>>4) & 0xf
+		y = int(e) & 0xf
+	} else if x, y, err = walk(m, tableNum); err != nil {
 		return 0, 0, 0, 0, err
 	}
 	if tableNum > 31 { // Process sign encodings for quadruples tables.
