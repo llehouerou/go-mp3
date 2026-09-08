@@ -56,12 +56,9 @@ func init() {
 	}
 }
 
-// The cosine matrices are stored output-major, cos[p][m], so each output's dot
-// product walks contiguous memory.
-var (
-	cosN12 = [12][6]float32{}
-	cosN36 = [36][18]float32{}
-)
+// cosN12 is the short-block kernel stored output-major, cos[p][m], so each
+// output's dot product walks contiguous memory.
+var cosN12 = [12][6]float32{}
 
 func init() {
 	const N12 = 12
@@ -70,11 +67,95 @@ func init() {
 			cosN12[p][m] = float32(math.Cos(math.Pi / (2 * N12) * (2*float64(p) + 1 + N12/2) * (2*float64(m) + 1)))
 		}
 	}
-	const N36 = 36
-	for p := range 36 {
-		for m := range 18 {
-			cosN36[p][m] = float32(math.Cos(math.Pi / (2 * N36) * (2*float64(p) + 1 + N36/2) * (2*float64(m) + 1)))
-		}
+}
+
+// Twiddles of the 18-point DCT-IV computed through a 9-point complex FFT.
+//
+//	X[k] = sum(m<18) in[m] * cos(pi/18 * (k+1/2) * (m+1/2))
+//
+// Splitting m into even indices 2j and odd ones 17-2j and pairing them as
+// z[j] = in[2j] + i*in[17-2j] turns the cosine kernel into
+//
+//	X[2k]    =  Re(Y[k])
+//	X[17-2k] = -Im(Y[k])
+//	Y[k]     = e^(-i*pi*(4k+1)/72) * FFT9(z[j] * e^(-i*pi*j/18))[k]
+//
+// FFT9 is radix-3 by radix-3, so the whole transform is about 110 multiplies
+// against 324 for the dot products it replaces.
+// cplx is a complex number in float32. Go's complex64 is not one the compiler
+// optimises: the same transform on it measured twice as slow.
+type cplx struct{ re, im float32 }
+
+func (a cplx) mul(b cplx) cplx { return cplx{a.re*b.re - a.im*b.im, a.re*b.im + a.im*b.re} }
+
+// unit is e^(-i*theta).
+func unit(theta float64) cplx {
+	return cplx{float32(math.Cos(theta)), float32(-math.Sin(theta))}
+}
+
+var (
+	preTw  [9]cplx // e^(-i*pi*j/18)
+	postTw [9]cplx // e^(-i*pi*(4k+1)/72)
+	w9     [3]cplx // e^(-2*i*pi*n/9) for n = 1, 2, 4
+)
+
+func init() {
+	for j := range 9 {
+		preTw[j] = unit(math.Pi * float64(j) / 18)
+		postTw[j] = unit(math.Pi * float64(4*j+1) / 72)
+	}
+	for i, n := range []float64{1, 2, 4} {
+		w9[i] = unit(2 * math.Pi * n / 9)
+	}
+}
+
+// sin60 is the radix-3 butterfly constant sqrt(3)/2.
+const sin60 = 0.86602540378443864676
+
+// fft3 is the radix-3 butterfly for W3 = e^(-2*i*pi/3), on scalars rather
+// than cplx: the struct version costs 87 inliner points against a budget of
+// 80, and not inlining it makes Win a third slower.
+//
+//nolint:gocritic // six results is the price of inlining, see above
+func fft3(ar, ai, br, bi, cr, ci float32) (x0r, x0i, x1r, x1i, x2r, x2i float32) {
+	tr, ti := br+cr, bi+ci
+	dr, di := (br-cr)*sin60, (bi-ci)*sin60 // -i*d rotates to (di, -dr)
+	mr, mi := ar-tr/2, ai-ti/2
+	return ar + tr, ai + ti, mr + di, mi - dr, mr - di, mi + dr
+}
+
+// dct4x18 computes the 18-point DCT-IV of in, see the twiddle tables above.
+//
+//nolint:gosec // fixed-size arrays; every index below is provably in range
+func dct4x18(x, in *[18]float32) {
+	var z [9]cplx
+	z[0] = cplx{in[0], in[17]}
+	for j := 1; j < 9; j++ {
+		z[j] = cplx{in[2*j], in[17-2*j]}.mul(preTw[j])
+	}
+
+	// FFT9 as radix-3 by radix-3: three FFT3s over stride-3 inputs, twiddle
+	// by W9^(j2*k1), three FFT3s across.
+	var u [9]cplx // u[j2*3 + k1]
+	for j2 := range 3 {
+		a, b, c := z[j2], z[j2+3], z[j2+6]
+		u[j2*3].re, u[j2*3].im, u[j2*3+1].re, u[j2*3+1].im, u[j2*3+2].re, u[j2*3+2].im =
+			fft3(a.re, a.im, b.re, b.im, c.re, c.im)
+	}
+	u[4] = u[4].mul(w9[0]) // W9^1
+	u[5] = u[5].mul(w9[1]) // W9^2
+	u[7] = u[7].mul(w9[1]) // W9^2
+	u[8] = u[8].mul(w9[2]) // W9^4
+	for k1 := range 3 {
+		a, b, c := u[k1], u[3+k1], u[6+k1]
+		z[k1].re, z[k1].im, z[k1+3].re, z[k1+3].im, z[k1+6].re, z[k1+6].im =
+			fft3(a.re, a.im, b.re, b.im, c.re, c.im)
+	}
+
+	for k := range 9 {
+		y := z[k].mul(postTw[k])
+		x[2*k] = y.re
+		x[17-2*k] = -y.im
 	}
 }
 
@@ -86,8 +167,12 @@ func init() {
 //
 // shifting p by 2N flips the sign, and reflecting p about -(1+n)/2 leaves x
 // unchanged; together those give x[p] = -x[n-1-p] and x[n+k] = x[N-1-k]. So
-// half the dot products are a copy with a sign, and only the windowing has to
-// visit every output.
+// half the outputs are a copy with a sign, and only the windowing has to visit
+// every output.
+//
+// For long blocks the n distinct values are the n-point DCT-IV X: writing
+// 2p+1+N/2 as 2(p+n/2)+1 gives x[p] = X[p+n/2], and the same reflections on X
+// give X[2n-1-k] = -X[k], so x[n+k] = -X[n/2-1-k].
 //
 //nolint:gosec // fixed-size arrays; every index below is provably in range
 func Win(out *[36]float32, in *[18]float32, blockType int) {
@@ -119,22 +204,12 @@ func Win(out *[36]float32, in *[18]float32, blockType int) {
 		return
 	}
 
+	var x [18]float32
+	dct4x18(&x, in)
 	for p := range 9 {
-		sum := float32(0.0)
-		w := &cosN36[p]
-		for m := range in {
-			sum += in[m] * w[m]
-		}
-		out[p] = sum * iwd[p]
-		out[17-p] = -sum * iwd[17-p]
-	}
-	for k := range 9 {
-		sum := float32(0.0)
-		w := &cosN36[18+k]
-		for m := range in {
-			sum += in[m] * w[m]
-		}
-		out[18+k] = sum * iwd[18+k]
-		out[35-k] = sum * iwd[35-k]
+		out[p] = x[9+p] * iwd[p]
+		out[17-p] = -x[9+p] * iwd[17-p]
+		out[18+p] = -x[8-p] * iwd[18+p]
+		out[35-p] = -x[8-p] * iwd[35-p]
 	}
 }
