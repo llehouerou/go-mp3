@@ -260,6 +260,25 @@ func TestLyingXingFrameCount(t *testing.T) {
 	}
 }
 
+// TestUnderReportingXingFrameCount pins that Read stops where Length() says the
+// audio ends, gapless or not: the Xing count is the length contract, so a file
+// holding more frames than its header claims plays exactly Length() bytes.
+func TestUnderReportingXingFrameCount(t *testing.T) {
+	opts := testaudio.Options{Frames: 20, XingMode: testaudio.Xing, XingFrameCount: 10}
+
+	d := open(t, testaudio.Build(opts))
+	if want := int64(11) * 4608; d.Length() != want {
+		t.Fatalf("Length() = %d, want %d", d.Length(), want)
+	}
+	decoded, err := io.ReadAll(d)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if int64(len(decoded)) != d.Length() {
+		t.Errorf("decoded %d bytes, Length() = %d", len(decoded), d.Length())
+	}
+}
+
 // TestNonSeekableSource covers a stream: a Xing header needs no seeking, so the
 // length is known even though seeking is not possible. The two used to be the
 // same condition.
