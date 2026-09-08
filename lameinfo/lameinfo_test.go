@@ -329,6 +329,18 @@ func TestParse_InvalidSync(t *testing.T) {
 	}
 }
 
+// TestParse_NotLayer3 pins that Parse judges the header the way the decoder
+// does: a Layer II frame has no Layer III side info, so bytes that spell
+// "Xing" where a Layer III tag would sit are not a Xing header.
+func TestParse_NotLayer3(t *testing.T) {
+	frame := buildTestFrame(testFrameOptions{isXing: true, flags: FlagFrameCount, frameCount: 10})
+	frame[1] = 0xFD // MPEG1, Layer II, no CRC
+	_, err := Parse(frame)
+	if !errors.Is(err, ErrNoXingHeader) {
+		t.Errorf("Parse() on a Layer II header: error = %v, want ErrNoXingHeader", err)
+	}
+}
+
 func TestParseFromReader(t *testing.T) {
 	frame := buildTestFrame(testFrameOptions{
 		isXing:         true,

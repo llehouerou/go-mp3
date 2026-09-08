@@ -14,6 +14,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+
+	"github.com/llehouerou/go-mp3/internal/frameheader"
 )
 
 // Info contains the parsed LAME/Xing header information.
@@ -113,22 +115,6 @@ func (i *Info) TotalPadding() int {
 // ErrNoXingHeader is returned when no Xing/Info header is found.
 var ErrNoXingHeader = errors.New("lameinfo: no Xing/Info header found")
 
-// sideInfoSize returns the size of the side information based on
-// MPEG version and channel mode.
-func sideInfoSize(mpegVersion int, mono bool) int {
-	if mpegVersion == 1 { // MPEG1
-		if mono {
-			return 17
-		}
-		return 32
-	}
-	// MPEG2 or MPEG2.5
-	if mono {
-		return 9
-	}
-	return 17
-}
-
 // Parse reads an MP3 frame and extracts LAME/Xing header information.
 // The frame should be the first audio frame of the MP3 file (after any ID3 tags).
 //
@@ -140,50 +126,16 @@ func Parse(frame []byte) (*Info, error) {
 	if len(frame) < 4 {
 		return nil, ErrNoXingHeader
 	}
-
-	// Parse frame header to determine side info size
-	header := binary.BigEndian.Uint32(frame[0:4])
-
-	// Check sync word (11 bits)
-	if (header & 0xFFE00000) != 0xFFE00000 {
+	h := frameheader.FrameHeader(binary.BigEndian.Uint32(frame))
+	if !h.IsValid() {
 		return nil, ErrNoXingHeader
 	}
 
-	// Extract MPEG version (bits 19-20)
-	mpegVersion := int((header >> 19) & 0x03)
-	if mpegVersion == 1 { // Reserved
-		return nil, ErrNoXingHeader
-	}
-	// Convert: 0=2.5, 2=2, 3=1
-	var version int
-	switch mpegVersion {
-	case 0:
-		version = 25 // MPEG 2.5
-	case 2:
-		version = 2 // MPEG 2
-	case 3:
-		version = 1 // MPEG 1
-	}
-
-	// Extract channel mode (bits 6-7)
-	channelMode := (header >> 6) & 0x03
-	mono := channelMode == 3 // 3 = single channel (mono)
-
-	// Calculate offset to Xing tag
-	var sideInfo int
-	if version == 1 {
-		sideInfo = sideInfoSize(1, mono)
-	} else {
-		sideInfo = sideInfoSize(2, mono)
-	}
-
-	offset := 4 + sideInfo // 4-byte header + side info
-
-	// Check for Xing or Info tag
+	// The tag sits right after the side information.
+	offset := 4 + h.SideInfoSize()
 	if len(frame) < offset+4 {
 		return nil, ErrNoXingHeader
 	}
-
 	tag := string(frame[offset : offset+4])
 	if tag != "Xing" && tag != "Info" {
 		return nil, ErrNoXingHeader
@@ -288,99 +240,22 @@ func isLAMEVersion(s string) bool {
 // This is a convenience function that reads enough data to parse the header.
 // For more control, use Parse with a pre-read frame.
 func ParseFromReader(r io.Reader) (*Info, error) {
-	// Read the frame header first
 	header := make([]byte, 4)
 	if _, err := io.ReadFull(r, header); err != nil {
 		return nil, err
 	}
-
-	// Parse header to get frame size
-	h := binary.BigEndian.Uint32(header)
-
-	// Check sync word
-	if (h & 0xFFE00000) != 0xFFE00000 {
+	h := frameheader.FrameHeader(binary.BigEndian.Uint32(header))
+	if !h.IsValid() {
 		return nil, ErrNoXingHeader
 	}
-
-	// Extract fields needed to calculate frame size
-	mpegVersion := (h >> 19) & 0x03
-	layer := (h >> 17) & 0x03
-	bitrateIndex := (h >> 12) & 0x0F
-	samplingRateIndex := (h >> 10) & 0x03
-	padding := (h >> 9) & 0x01
-
-	if mpegVersion == 1 || layer == 0 || bitrateIndex == 0 || bitrateIndex == 15 || samplingRateIndex == 3 {
+	size, err := h.FrameSize()
+	if err != nil || size < 4 {
 		return nil, ErrNoXingHeader
 	}
-
-	// Calculate frame size
-	frameSize := calculateFrameSize(mpegVersion, layer, bitrateIndex, samplingRateIndex, padding)
-	if frameSize < 4 {
-		return nil, ErrNoXingHeader
-	}
-
-	// Read the rest of the frame
-	frame := make([]byte, frameSize)
+	frame := make([]byte, size)
 	copy(frame, header)
 	if _, err := io.ReadFull(r, frame[4:]); err != nil {
 		return nil, err
 	}
-
 	return Parse(frame)
-}
-
-// Bitrate tables for frame size calculation
-var bitrateTable = [4][4][16]int{
-	// MPEG 2.5 (index 0)
-	{
-		{0}, // Reserved
-		{0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0},      // Layer III
-		{0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0},      // Layer II
-		{0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, 0}, // Layer I
-	},
-	// Reserved (index 1)
-	{},
-	// MPEG 2 (index 2)
-	{
-		{0}, // Reserved
-		{0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0},      // Layer III
-		{0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0},      // Layer II
-		{0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, 0}, // Layer I
-	},
-	// MPEG 1 (index 3)
-	{
-		{0}, // Reserved
-		{0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0},     // Layer III
-		{0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0},    // Layer II
-		{0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 0}, // Layer I
-	},
-}
-
-var samplingRateTable = [4][4]int{
-	{11025, 12000, 8000, 0},  // MPEG 2.5
-	{0, 0, 0, 0},             // Reserved
-	{22050, 24000, 16000, 0}, // MPEG 2
-	{44100, 48000, 32000, 0}, // MPEG 1
-}
-
-func calculateFrameSize(mpegVersion, layer, bitrateIndex, samplingRateIndex, padding uint32) int {
-	bitrate := bitrateTable[mpegVersion][layer][bitrateIndex] * 1000
-	samplingRate := samplingRateTable[mpegVersion][samplingRateIndex]
-
-	if bitrate == 0 || samplingRate == 0 {
-		return 0
-	}
-
-	var frameSize int
-	if layer == 3 { // Layer I
-		frameSize = (12*bitrate/samplingRate + int(padding)) * 4
-	} else { // Layer II or III
-		if mpegVersion == 3 { // MPEG 1
-			frameSize = 144*bitrate/samplingRate + int(padding)
-		} else { // MPEG 2 or 2.5
-			frameSize = 72*bitrate/samplingRate + int(padding)
-		}
-	}
-
-	return frameSize
 }
