@@ -49,55 +49,57 @@ func benchFrame(b *testing.B) *Frame {
 func BenchmarkFrame(b *testing.B) {
 	f := benchFrame(b)
 	nch := f.header.NumberOfChannels()
-	is := f.mainData.Is
+	g := &f.g.Ch[0]
+	all := f.g.Ch
 	out := make([]byte, f.BytesPerFrame())
 
 	b.Run("Decode", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			f.mainData.Is = is
+			f.g.Ch = all
 			f.Decode(out)
 		}
 	})
 
+	saved := *g
 	b.Run("requantize", func(b *testing.B) {
 		for b.Loop() {
-			f.mainData.Is[0] = is[0]
+			*g = saved
 			for ch := range nch {
-				f.requantize(0, ch)
+				f.requantize(&g[ch])
 			}
 		}
 	})
 
 	for ch := range nch {
-		f.requantize(0, ch)
-		f.reorder(0, ch)
+		f.requantize(&g[ch])
+		f.reorder(&g[ch])
 	}
-	f.stereo(0)
+	f.stereo(g)
 	for ch := range nch {
-		f.antialias(0, ch)
+		antialias(&g[ch])
 	}
-	is = f.mainData.Is
+	saved = *g
 	store := f.store
 
 	b.Run("hybridSynthesis", func(b *testing.B) {
 		for b.Loop() {
-			f.mainData.Is[0] = is[0]
+			*g = saved
 			f.store = store
 			for ch := range nch {
-				f.hybridSynthesis(0, ch)
+				f.hybridSynthesis(&g[ch], ch)
 			}
 		}
 	})
 
 	for ch := range nch {
-		f.hybridSynthesis(0, ch)
+		f.hybridSynthesis(&g[ch], ch)
 	}
 
 	b.Run("subbandSynthesis", func(b *testing.B) {
 		for b.Loop() {
 			for ch := range nch {
-				f.subbandSynthesis(0, ch, out)
+				f.subbandSynthesis(&g[ch], ch, out)
 			}
 		}
 	})
