@@ -154,38 +154,39 @@ func (f *Frame) Decode(out []byte) {
 	}
 }
 
-func (f *Frame) requantizeProcessLong(gr, ch, isPos, sfb int) {
+// gainLong is the requantization gain 2^(k/4) of a long-block scalefactor band.
+func (f *Frame) gainLong(gr, ch, sfb int) float64 {
 	m := 2
 	if f.sideInfo.ScalefacScale[gr][ch] != 0 {
 		m = 4
 	}
 	k := -m*(f.mainData.ScalefacL[gr][ch][sfb]+f.sideInfo.Preflag[gr][ch]*pretab[sfb]) +
 		f.sideInfo.GlobalGain[gr][ch] - 210
-	tmp1 := pow2Quarter[k-pow2QuarterMin]
-	tmp2 := 0.0
-	if f.mainData.Is[gr][ch][isPos] < 0.0 {
-		tmp2 = -powtab34[int(-f.mainData.Is[gr][ch][isPos])]
-	} else {
-		tmp2 = powtab34[int(f.mainData.Is[gr][ch][isPos])]
-	}
-	f.mainData.Is[gr][ch][isPos] = float32(tmp1 * tmp2)
+	return pow2Quarter[k-pow2QuarterMin]
 }
 
-func (f *Frame) requantizeProcessShort(gr, ch, isPos, sfb, win int) {
+// gainShort is the requantization gain 2^(k/4) of one window of a short-block
+// scalefactor band.
+func (f *Frame) gainShort(gr, ch, sfb, win int) float64 {
 	m := 2
 	if f.sideInfo.ScalefacScale[gr][ch] != 0 {
 		m = 4
 	}
 	k := -m*f.mainData.ScalefacS[gr][ch][sfb][win] +
 		f.sideInfo.GlobalGain[gr][ch] - 210 - 8*f.sideInfo.SubblockGain[gr][ch][win]
-	tmp1 := pow2Quarter[k-pow2QuarterMin]
-	tmp2 := 0.0
-	if f.mainData.Is[gr][ch][isPos] < 0 {
-		tmp2 = -powtab34[int(-f.mainData.Is[gr][ch][isPos])]
-	} else {
-		tmp2 = powtab34[int(f.mainData.Is[gr][ch][isPos])]
+	return pow2Quarter[k-pow2QuarterMin]
+}
+
+// requantizeBand turns the Huffman-decoded integers in is into frequency
+// lines: sign(v) * |v|^(4/3) * gain.
+func requantizeBand(is []float32, gain float64) {
+	for i, v := range is {
+		if v < 0 {
+			is[i] = float32(gain * -powtab34[int(-v)])
+		} else {
+			is[i] = float32(gain * powtab34[int(v)])
+		}
 	}
-	f.mainData.Is[gr][ch][isPos] = float32(tmp1 * tmp2)
 }
 
 func getSfBandIndicesArray(header *frameheader.FrameHeader) (long, short []int) {
@@ -196,75 +197,35 @@ func getSfBandIndicesArray(header *frameheader.FrameHeader) (long, short []int) 
 	return long, short
 }
 
+// requantize applies the per-band gains to the lines below count1. Lines above
+// it are zero and stay zero, so a band that straddles count1 is done whole.
 func (f *Frame) requantize(gr, ch int) {
-	sfBandIndicesLong, sfBandIndicesShort := getSfBandIndicesArray(&f.header)
-	// Determine type of block to process
-	if f.sideInfo.WinSwitchFlag[gr][ch] == 1 && f.sideInfo.BlockType[gr][ch] == 2 { // Short blocks
-		// Check if the first two subbands
-		// (=2*18 samples = 8 long or 3 short sfb's) uses long blocks
-		if f.sideInfo.MixedBlockFlag[gr][ch] != 0 { // 2 longbl. sb  first
-			// First process the 2 long block subbands at the start
-			sfb := 0
-			nextSfb := sfBandIndicesLong[sfb+1]
-			for i := range 36 {
-				if i == nextSfb {
-					sfb++
-					nextSfb = sfBandIndicesLong[sfb+1]
-				}
-				f.requantizeProcessLong(gr, ch, i, sfb)
-			}
-			// And next the remaining,non-zero,bands which uses short blocks
-			sfb = 3
-			nextSfb = sfBandIndicesShort[sfb+1] * 3
-			winLen := sfBandIndicesShort[sfb+1] -
-				sfBandIndicesShort[sfb]
+	long, short := getSfBandIndicesArray(&f.header)
+	is := &f.mainData.Is[gr][ch]
+	count1 := f.sideInfo.Count1[gr][ch]
 
-			for i := 36; i < f.sideInfo.Count1[gr][ch]; /* i++ done below! */ {
-				// Check if we're into the next scalefac band
-				if i == nextSfb {
-					sfb++
-					nextSfb = sfBandIndicesShort[sfb+1] * 3
-					winLen = sfBandIndicesShort[sfb+1] -
-						sfBandIndicesShort[sfb]
-				}
-				for win := range 3 {
-					for range winLen {
-						f.requantizeProcessShort(gr, ch, i, sfb, win)
-						i++
-					}
-				}
-
-			}
-		} else { // Only short blocks
-			sfb := 0
-			nextSfb := sfBandIndicesShort[sfb+1] * 3
-			winLen := sfBandIndicesShort[sfb+1] -
-				sfBandIndicesShort[sfb]
-			for i := 0; i < f.sideInfo.Count1[gr][ch]; /* i++ done below! */ {
-				// Check if we're into the next scalefac band
-				if i == nextSfb {
-					sfb++
-					nextSfb = sfBandIndicesShort[sfb+1] * 3
-					winLen = sfBandIndicesShort[sfb+1] -
-						sfBandIndicesShort[sfb]
-				}
-				for win := range 3 {
-					for range winLen {
-						f.requantizeProcessShort(gr, ch, i, sfb, win)
-						i++
-					}
-				}
-			}
+	shortBlocks := f.sideInfo.WinSwitchFlag[gr][ch] == 1 && f.sideInfo.BlockType[gr][ch] == 2
+	if !shortBlocks {
+		for sfb := 0; long[sfb] < count1; sfb++ {
+			requantizeBand(is[long[sfb]:min(long[sfb+1], count1)], f.gainLong(gr, ch, sfb))
 		}
-	} else { // Only long blocks
-		sfb := 0
-		nextSfb := sfBandIndicesLong[sfb+1]
-		for i := range f.sideInfo.Count1[gr][ch] {
-			if i == nextSfb {
-				sfb++
-				nextSfb = sfBandIndicesLong[sfb+1]
-			}
-			f.requantizeProcessLong(gr, ch, i, sfb)
+		return
+	}
+
+	// A mixed block codes its first two subbands (36 lines, 8 long bands for
+	// MPEG1, 6 for MPEG2) as long, and the short bands start at sfb 3.
+	firstShort := 0
+	if f.sideInfo.MixedBlockFlag[gr][ch] != 0 {
+		for sfb := 0; long[sfb] < 36; sfb++ {
+			requantizeBand(is[long[sfb]:min(long[sfb+1], 36)], f.gainLong(gr, ch, sfb))
+		}
+		firstShort = 3
+	}
+	for sfb := firstShort; sfb < 13 && short[sfb]*3 < count1; sfb++ {
+		winLen := short[sfb+1] - short[sfb]
+		for win := range 3 {
+			start := short[sfb]*3 + win*winLen
+			requantizeBand(is[start:start+winLen], f.gainShort(gr, ch, sfb, win))
 		}
 	}
 }
