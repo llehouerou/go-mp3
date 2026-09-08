@@ -86,7 +86,6 @@ func BenchmarkFrame(b *testing.B) {
 
 	for ch := range nch {
 		f.hybridSynthesis(0, ch)
-		f.frequencyInversion(0, ch)
 	}
 
 	b.Run("subbandSynthesis", func(b *testing.B) {

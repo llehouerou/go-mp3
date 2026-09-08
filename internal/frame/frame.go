@@ -148,7 +148,6 @@ func (f *Frame) Decode(out []byte) {
 		for ch := range nch {
 			f.antialias(gr, ch)
 			f.hybridSynthesis(gr, ch)
-			f.frequencyInversion(gr, ch)
 			f.subbandSynthesis(gr, ch, out[consts.SamplesPerGr*4*gr:])
 		}
 	}
@@ -427,36 +426,30 @@ func (f *Frame) antialias(gr, ch int) {
 	}
 }
 
+// hybridSynthesis runs the IMDCT on every subband, overlap-adds the previous
+// granule's second half, and applies the frequency inversion: odd lines of
+// odd subbands are negated to undo the polyphase filterbank's aliasing sign.
+//
+//nolint:gosec // fixed-size arrays; every index below is provably in range
 func (f *Frame) hybridSynthesis(gr, ch int) {
-	// Scratch buffers reused across all subbands (stack-allocated)
-	var in [18]float32
 	var rawout [36]float32
-
-	// Loop through all 32 subbands
 	for sb := range 32 {
-		// Determine blocktype for this subband
 		bt := f.sideInfo.BlockType[gr][ch]
 		if (f.sideInfo.WinSwitchFlag[gr][ch] == 1) &&
 			(f.sideInfo.MixedBlockFlag[gr][ch] == 1) && (sb < 2) {
 			bt = 0
 		}
-		// Do the inverse modified DCT and windowing
-		for i := range in {
-			in[i] = f.mainData.Is[gr][ch][sb*18+i]
-		}
-		imdct.Win(&rawout, &in, bt)
-		// Overlap add with stored vector into main_data vector
+		lines := (*[18]float32)(f.mainData.Is[gr][ch][sb*18 : sb*18+18])
+		store := &f.store[ch][sb]
+		imdct.Win(&rawout, lines, bt)
 		for i := range 18 {
-			f.mainData.Is[gr][ch][sb*18+i] = rawout[i] + f.store[ch][sb][i] //nolint:gosec // i is bounded by range 18, rawout is [36]float32
-			f.store[ch][sb][i] = rawout[i+18]                               //nolint:gosec // i+18 < 36
+			lines[i] = rawout[i] + store[i]
+			store[i] = rawout[i+18]
 		}
-	}
-}
-
-func (f *Frame) frequencyInversion(gr, ch int) {
-	for sb := 1; sb < 32; sb += 2 {
-		for i := 1; i < 18; i += 2 {
-			f.mainData.Is[gr][ch][sb*18+i] = -f.mainData.Is[gr][ch][sb*18+i]
+		if sb%2 == 1 {
+			for i := 1; i < 18; i += 2 {
+				lines[i] = -lines[i]
+			}
 		}
 	}
 }
