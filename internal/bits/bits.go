@@ -67,6 +67,23 @@ func (b *Bits) Bit() int {
 	return v
 }
 
+// window returns the next 64 bits, MSB first, zero-padded past the end.
+func (b *Bits) window() uint64 {
+	i := b.pos >> 3
+	if i >= len(b.vec) {
+		return 0
+	}
+	var w uint64
+	if i+8 <= len(b.vec) {
+		w = binary.BigEndian.Uint64(b.vec[i:])
+	} else {
+		for j, c := range b.vec[i:] {
+			w |= uint64(c) << (56 - 8*j)
+		}
+	}
+	return w << (b.pos & 7)
+}
+
 // Bits reads the next num bits, num at most 57, as an unsigned integer.
 func (b *Bits) Bits(num int) int {
 	if num == 0 {
@@ -76,18 +93,25 @@ func (b *Bits) Bits(num int) int {
 		b.err = ErrOutOfBounds
 		return 0
 	}
-	i := b.pos >> 3
-	var w uint64
-	if i+8 <= len(b.vec) {
-		w = binary.BigEndian.Uint64(b.vec[i:])
-	} else {
-		for j, c := range b.vec[i:] {
-			w |= uint64(c) << (56 - 8*j)
-		}
-	}
-	w <<= b.pos & 7
+	w := b.window()
 	b.pos += num
 	return int(w >> (64 - num)) //nolint:gosec // at most num <= 57 bits remain
+}
+
+// Peek returns the next num bits, num at most 57, without consuming them.
+// Bits past the end read as zero, as they do bit by bit.
+func (b *Bits) Peek(num int) int {
+	return int(b.window() >> (64 - num)) //nolint:gosec // at most num <= 57 bits remain
+}
+
+// Skip consumes num bits, stopping at the end of the buffer exactly as num
+// calls to Bit would.
+func (b *Bits) Skip(num int) {
+	b.pos += num
+	if end := len(b.vec) * 8; b.pos > end {
+		b.pos = end
+		b.err = ErrOutOfBounds
+	}
 }
 
 func (b *Bits) BitPos() int {
