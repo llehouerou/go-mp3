@@ -20,17 +20,17 @@ func benchFrame(b *testing.B) *Frame {
 		b.Fatal(err)
 	}
 	src := fullReader{bytes.NewReader(buf)}
-	var f *Frame
+	f := &Frame{}
 	var pos int64
+	var out []byte
 	for range 40 {
-		f, pos, err = Read(src, pos, f)
-		if err != nil {
+		if pos, err = f.Read(src, pos); err != nil {
 			b.Fatal(err)
 		}
-		f.Decode()
+		out = make([]byte, f.BytesPerFrame())
+		f.Decode(out)
 	}
-	f, _, err = Read(src, pos, f)
-	if err != nil {
+	if _, err = f.Read(src, pos); err != nil {
 		b.Fatal(err)
 	}
 	return f
@@ -44,12 +44,13 @@ func BenchmarkFrame(b *testing.B) {
 	f := benchFrame(b)
 	nch := f.header.NumberOfChannels()
 	is := f.mainData.Is
+	out := make([]byte, f.BytesPerFrame())
 
 	b.Run("Decode", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
 			f.mainData.Is = is
-			f.Decode()
+			f.Decode(out)
 		}
 	})
 
@@ -87,7 +88,6 @@ func BenchmarkFrame(b *testing.B) {
 		f.hybridSynthesis(0, ch)
 		f.frequencyInversion(0, ch)
 	}
-	out := make([]byte, f.BytesPerFrame())
 
 	b.Run("subbandSynthesis", func(b *testing.B) {
 		for b.Loop() {

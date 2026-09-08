@@ -46,13 +46,16 @@ func DefaultDecoderOptions() DecoderOptions {
 // access the same Decoder (e.g., one for playback and one for seeking),
 // the caller must synchronize access with a mutex or similar mechanism.
 type Decoder struct {
-	source        *source
-	sampleRate    int
-	length        int64 // Virtual (trimmed) length, or -1
-	rawLength     int64 // Raw decoded bytes before trimming, or -1
-	frameStarts   []int64
+	source      *source
+	sampleRate  int
+	length      int64 // Virtual (trimmed) length, or -1
+	rawLength   int64 // Raw decoded bytes before trimming, or -1
+	frameStarts []int64
+	// buf is the decoded PCM not yet handed to the caller; pcm is the array it
+	// lives in, so readFrame can start over at the front once buf is drained.
 	buf           []byte
-	frame         *frame.Frame
+	pcm           []byte
+	frame         frame.Frame
 	pos           int64 // Virtual position (after trimming)
 	bytesPerFrame int64
 
@@ -80,8 +83,7 @@ type Decoder struct {
 var ErrNotSeekable = errors.New("mp3: source is not seekable")
 
 func (d *Decoder) readFrame() error {
-	var err error
-	d.frame, _, err = frame.Read(d.source, d.source.pos, d.frame)
+	_, err := d.frame.Read(d.source, d.source.pos)
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			return io.EOF
@@ -99,7 +101,15 @@ func (d *Decoder) readFrame() error {
 		}
 		return err
 	}
-	d.buf = append(d.buf, d.frame.Decode()...)
+	if len(d.buf) == 0 {
+		d.buf = d.pcm[:0]
+	}
+	n := len(d.buf)
+	d.buf = append(d.buf, make([]byte, d.frame.BytesPerFrame())...)
+	d.frame.Decode(d.buf[n:])
+	if n == 0 {
+		d.pcm = d.buf
+	}
 	return nil
 }
 
@@ -178,7 +188,7 @@ func (d *Decoder) Seek(offset int64, whence int) (int64, error) {
 
 	d.pos = npos
 	d.buf = nil
-	d.frame = nil
+	d.frame.Reset()
 
 	// Handle seeking to end of file - no frames to read
 	if d.length != invalidLength && d.pos >= d.length {

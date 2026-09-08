@@ -38,8 +38,18 @@ func New(vec []byte) *Bits {
 	}
 }
 
-func Append(bits *Bits, buf []byte) *Bits {
-	return New(append(bits.vec, buf...))
+// Shift discards all but the last keep bytes and rewinds to the first bit,
+// forgetting any earlier read error.
+func (b *Bits) Shift(keep int) {
+	copy(b.vec, b.vec[len(b.vec)-keep:])
+	b.vec = b.vec[:keep]
+	b.bitPos, b.bytePos, b.err = 0, 0, nil
+}
+
+// Grow appends n zero bytes and returns them for the caller to fill.
+func (b *Bits) Grow(n int) []byte {
+	b.vec = append(b.vec, make([]byte, n)...)
+	return b.vec[len(b.vec)-n:]
 }
 
 func (b *Bits) Bit() int {
@@ -87,8 +97,4 @@ func (b *Bits) SetPos(pos int) {
 
 func (b *Bits) LenInBytes() int {
 	return len(b.vec)
-}
-
-func (b *Bits) Tail(offset int) []byte {
-	return b.vec[len(b.vec)-offset:]
 }
